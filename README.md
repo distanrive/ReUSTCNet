@@ -142,6 +142,6 @@ python main.py
 
 ## 致谢
 
-- [pystray](https://github.com/moses-palmer/pystray) - 系统托盘支持
-- [Pillow](https://python-pillow.org/) - 图像处理
-- [PyInstaller](https://pyinstaller.org/) - 程序打包
+- [pystray](https://github.com/moses-palmer/pystray) - 系统托盘支持 (LGPL-3.0)
+- [Pillow](https://github.com/python-pillow/Pillow) - 图像处理 (MIT-CMU)
+- [PyInstaller](https://github.com/pyinstaller/pyinstaller) - 程序打包 (GPLv2 with Bootloader Exception)
