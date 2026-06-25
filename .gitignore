@@ -1,0 +1,13 @@
+.idea/
+build_venv/
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+config.json
+logs/
+icon.ico
+icon.png
+icon.psd
+oldversion/
