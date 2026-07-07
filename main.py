@@ -330,7 +330,7 @@ class NetworkManager:
                             status_callback("重连失败，切换到快速重试模式")
                             interval = fast_interval
                             state = "fast"
-                else:
+                else:  # state == "fast"
                     if self.check_permission():
                         status_callback(f"网络已恢复 - 当前连接到: {self.get_current_port_info()}")
                         interval = normal_interval
@@ -343,6 +343,7 @@ class NetworkManager:
                             status_callback(msg)
                             interval = normal_interval
                             state = "normal"
+                            continue  # 🛠跳过后续 sleep
                         else:
                             status_callback(msg)
                     time.sleep(interval)
