@@ -14,11 +14,12 @@
 - 可自定义检测间隔、出口类型、是否开机自启
 - 密码使用 Windows 数据保护 API (DPAPI) 加密存储，仅当前用户可解密
 - 一键清除已保存密码或删除开机自启注册表项
+- 定时执行指令：到达设定时间后弹出确认倒计时，倒计时结束执行程序根目录下的 `command.bat`
 - 单文件 EXE 发布，无需安装 Python 环境
 
 ## 截图
 
-![image-20260624223235289](README.assets/image-20260624223235289.png)
+![Snipaste_2026-08-14_13-43-56](README.assets/Snipaste_2026-08-14_13-43-56.png)
 
 ## 使用方式
 
@@ -42,6 +43,20 @@ pip install requests pystray pillow
 # 运行
 python main.py
 ```
+
+### 定时执行指令
+
+1. 在程序界面勾选“定时执行指令”，在同一行设置**运行时间**（24 小时制，精确到分钟）与**确认倒计时**（秒）。
+2. 在程序根目录（`main.py` 或 `reustcnet.exe` 所在目录）新建 `command.bat`，自行写入需要定时执行的指令，例如：
+
+   ```batch
+   @echo off
+   shutdown /s /t 0
+   ```
+
+3. 到达设定时间后，程序会弹出确认倒计时窗口；倒计时结束或点击“立即执行”后，会执行 `command.bat`。
+4. 若触发时根目录下不存在 `command.bat`，程序会提示并跳过本次执行。
+5. 每次成功触发后程序会记录“已触发”，同一分钟只执行一次，执行后即使立即重启也不会重复触发；如当天需要再次执行，点击界面上的「重置触发」按钮即可。
 
 ## 打包
 
@@ -83,7 +98,12 @@ python main.py
   "export_type": "0",
   "fast_retry_interval": 60,
   "normal_check_interval": 900,
-  "auto_start": false
+  "auto_start": false,
+  "auto_command": false,
+  "command_hour": 23,
+  "command_minute": 0,
+  "command_countdown": 30,
+  "command_last_triggered": ""
 }
 ```
 
@@ -95,6 +115,11 @@ python main.py
 | `fast_retry_interval`   | 断网时快速重试的间隔（秒）                                   |
 | `normal_check_interval` | 正常联网时检测间隔（秒）                                     |
 | `auto_start`            | 是否启用自启动（程序启动后自动开始监控，并在注册表添加开机自启） |
+| `auto_command`          | 是否启用定时执行指令                                         |
+| `command_hour`          | 指令运行时间（小时，0-23）                                   |
+| `command_minute`        | 指令运行时间（分钟，0-59）                                   |
+| `command_countdown`     | 执行前的确认倒计时时长（秒）                                 |
+| `command_last_triggered`| 上次已触发的运行时间，用于防止重启后同一分钟重复触发；点「重置触发」清空 |
 
 ## 密码安全
 

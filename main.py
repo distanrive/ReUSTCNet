@@ -132,6 +132,12 @@ class ConfigManager:
                         config["password"] = ""
                 if "startup_on_boot" in config and "auto_start" not in config:
                     config["auto_start"] = config.pop("startup_on_boot")
+                if "auto_command" not in config:
+                    config["auto_command"] = config.pop("auto_shutdown", False)
+                    config["command_hour"] = config.pop("shutdown_hour", 23)
+                    config["command_minute"] = config.pop("shutdown_minute", 0)
+                    config.setdefault("command_countdown", 30)
+                config.setdefault("command_last_triggered", "")
                 return config
             except Exception:  # noqa: broad-except — 配置文件损坏时回退到默认配置
                 pass
@@ -144,9 +150,11 @@ class ConfigManager:
             "fast_retry_interval": 60,
             "normal_check_interval": 900,
             "auto_start": False,
-            "auto_shutdown": False,
-            "shutdown_hour": 23,
-            "shutdown_minute": 0
+            "auto_command": False,
+            "command_hour": 23,
+            "command_minute": 0,
+            "command_countdown": 30,
+            "command_last_triggered": ""
         }
         self.save_config(default_config)
         return default_config
@@ -396,10 +404,12 @@ class USTCNetApp:
     startup_var: tk.BooleanVar
     startup_check: ttk.Checkbutton
     clear_startup_btn: ttk.Button
-    auto_shutdown_var: tk.BooleanVar
-    shutdown_cb: ttk.Checkbutton
-    shutdown_hour_var: tk.StringVar
-    shutdown_minute_var: tk.StringVar
+    auto_command_var: tk.BooleanVar
+    command_cb: ttk.Checkbutton
+    command_hour_var: tk.StringVar
+    command_minute_var: tk.StringVar
+    command_countdown_var: tk.StringVar
+    reset_command_btn: ttk.Button
     log_text: scrolledtext.ScrolledText
     start_button: ttk.Button
     stop_button: ttk.Button
@@ -418,10 +428,12 @@ class USTCNetApp:
         self.config_manager = ConfigManager()
         self.network_manager = NetworkManager(self.config_manager)
         self.monitoring_thread = None
-        self.shutdown_thread = None
-        self.shutdown_dialog = None
-        self._shutdown_hour = 23
-        self._shutdown_minute = 0
+        self.command_thread = None
+        self.command_dialog = None
+        self._command_hour = 23
+        self._command_minute = 0
+        self._command_countdown = 30
+        self._command_last_triggered = ""
 
         # 托盘图标（在 setup_tray_icon 中创建，由 create_widgets 调用）
         self.icon = None
@@ -447,6 +459,18 @@ class USTCNetApp:
             var.set(f"{val:02d}")
         except ValueError:
             var.set("00")
+
+    @staticmethod
+    def format_countdown(var):
+        try:
+            val = int(var.get())
+            if val < 1:
+                val = 1
+            elif val > 3600:
+                val = 3600
+            var.set(str(val))
+        except ValueError:
+            var.set("30")
 
     def create_widgets(self):
         main_frame = ttk.Frame(self.root, padding="10")
@@ -529,36 +553,49 @@ class USTCNetApp:
         self.clear_startup_btn = ttk.Button(settings_frame, text="删除自启项", command=self.remove_startup_entry)
         self.clear_startup_btn.grid(row=4, column=1, sticky="w", padx=(10, 0), pady=(5, 0))
 
-        # 自动关机区域（Spinbox 带循环与格式化）
+        # 定时执行指令区域（Spinbox 带循环与格式化）
         ttk.Separator(settings_frame, orient='horizontal').grid(row=5, column=0, columnspan=2, sticky="we", pady=(10, 0))
 
-        self.auto_shutdown_var = tk.BooleanVar()
-        self.shutdown_cb = ttk.Checkbutton(settings_frame, text="自动关机", variable=self.auto_shutdown_var,
-                                           command=self.on_auto_shutdown_toggle)
-        self.shutdown_cb.grid(row=6, column=0, sticky="w", padx=(5, 0), pady=(5, 0))
+        self.auto_command_var = tk.BooleanVar()
+        self.command_cb = ttk.Checkbutton(settings_frame, text="定时执行指令", variable=self.auto_command_var,
+                                          command=self.on_auto_command_toggle)
+        self.command_cb.grid(row=6, column=0, sticky="w", padx=(5, 0), pady=(5, 0))
 
-        shutdown_time_frame = ttk.Frame(settings_frame)
-        shutdown_time_frame.grid(row=6, column=1, sticky="w", padx=(10, 0))
+        command_time_frame = ttk.Frame(settings_frame)
+        command_time_frame.grid(row=6, column=1, sticky="w", padx=(10, 0))
 
-        ttk.Label(shutdown_time_frame, text="时间:").pack(side=tk.LEFT)
+        ttk.Label(command_time_frame, text="运行时间:").pack(side=tk.LEFT)
 
-        self.shutdown_hour_var = tk.StringVar(value="23")
-        hour_spin = tk.Spinbox(shutdown_time_frame, from_=0, to=23, width=3,
-                               textvariable=self.shutdown_hour_var,
+        self.command_hour_var = tk.StringVar(value="23")
+        hour_spin = tk.Spinbox(command_time_frame, from_=0, to=23, width=3,
+                               textvariable=self.command_hour_var,
                                wrap=True, command=self.save_settings)
         hour_spin.pack(side=tk.LEFT)
-        hour_spin.bind("<FocusOut>", lambda e: self.format_spinbox(self.shutdown_hour_var, 23))
+        hour_spin.bind("<FocusOut>", lambda e: self.format_spinbox(self.command_hour_var, 23))
 
-        ttk.Label(shutdown_time_frame, text=":").pack(side=tk.LEFT)
+        ttk.Label(command_time_frame, text=":").pack(side=tk.LEFT)
 
-        self.shutdown_minute_var = tk.StringVar(value="00")
-        minute_spin = tk.Spinbox(shutdown_time_frame, from_=0, to=59, width=3,
-                                 textvariable=self.shutdown_minute_var,
+        self.command_minute_var = tk.StringVar(value="00")
+        minute_spin = tk.Spinbox(command_time_frame, from_=0, to=59, width=3,
+                                 textvariable=self.command_minute_var,
                                  wrap=True, command=self.save_settings)
         minute_spin.pack(side=tk.LEFT)
-        minute_spin.bind("<FocusOut>", lambda e: self.format_spinbox(self.shutdown_minute_var, 59))
+        minute_spin.bind("<FocusOut>", lambda e: self.format_spinbox(self.command_minute_var, 59))
 
-        ttk.Label(shutdown_time_frame, text="(24h)").pack(side=tk.LEFT)
+        ttk.Label(command_time_frame, text="(24h)").pack(side=tk.LEFT)
+
+        # 确认倒计时（与运行时间同一行）
+        ttk.Label(command_time_frame, text="  确认倒计时(秒):").pack(side=tk.LEFT, padx=(15, 0))
+        self.command_countdown_var = tk.StringVar(value="30")
+        countdown_spin = tk.Spinbox(command_time_frame, from_=1, to=3600, width=6,
+                                    textvariable=self.command_countdown_var,
+                                    command=self.save_settings)
+        countdown_spin.pack(side=tk.LEFT)
+        countdown_spin.bind("<FocusOut>", lambda e: self.format_countdown(self.command_countdown_var))
+
+        # 重置触发状态
+        self.reset_command_btn = ttk.Button(settings_frame, text="重置触发", command=self.reset_command_triggered)
+        self.reset_command_btn.grid(row=7, column=1, sticky="w", padx=(10, 0), pady=(5, 0))
 
         # 日志区域
         log_frame = ttk.LabelFrame(main_frame, text="最新日志", padding="5")
@@ -578,46 +615,66 @@ class USTCNetApp:
         log_frame.rowconfigure(0, weight=1)
         self.setup_tray_icon()
 
-    def on_auto_shutdown_toggle(self):
+    def on_auto_command_toggle(self):
         self.save_settings()
-        if self.auto_shutdown_var.get():
-            self.start_shutdown_watcher()
+        if self.auto_command_var.get():
+            self.start_command_watcher()
         else:
-            self.stop_shutdown_watcher()
+            self.stop_command_watcher()
 
-    def start_shutdown_watcher(self):
-        if self.shutdown_thread and self.shutdown_thread.is_alive():
+    def start_command_watcher(self):
+        if self.command_thread and self.command_thread.is_alive():
             return
-        self.shutdown_thread = threading.Thread(target=self._shutdown_watcher_loop, daemon=True)
-        self.shutdown_thread.start()
+        self.command_thread = threading.Thread(target=self._command_watcher_loop, daemon=True)
+        self.command_thread.start()
 
-    def stop_shutdown_watcher(self):
-        self.shutdown_thread = None
+    def stop_command_watcher(self):
+        self.command_thread = None
 
-    def _shutdown_watcher_loop(self):
-        last_triggered_date = None
-        while self.auto_shutdown_var.get():
+    def reset_command_triggered(self):
+        self._command_last_triggered = ""
+        self.save_settings()
+        self.add_log("已重置定时执行指令触发状态")
+
+    def _on_command_triggered(self):
+        self.save_settings()
+        self.show_command_dialog()
+
+    def _command_watcher_loop(self):
+        while self.auto_command_var.get():
             try:
                 now = datetime.now()
-                target_h = self._shutdown_hour
-                target_m = self._shutdown_minute
+                target_h = self._command_hour
+                target_m = self._command_minute
+                trigger_key = now.strftime("%Y-%m-%d %H:%M")
                 if (now.hour == target_h and now.minute == target_m and
-                        last_triggered_date != now.date()):
-                    last_triggered_date = now.date()
-                    self.root.after(0, lambda: self.show_shutdown_dialog())  # pylint: disable=unnecessary-lambda
+                        self._command_last_triggered != trigger_key):
+                    self._command_last_triggered = trigger_key
+                    self.root.after(0, self._on_command_triggered)
             except Exception as e:
-                print(f"关机守护线程异常: {e}")
+                print(f"指令守护线程异常: {e}")
             time.sleep(1)
 
-    def show_shutdown_dialog(self):
-        if self.shutdown_dialog and self.shutdown_dialog.winfo_exists():
+    def show_command_dialog(self):
+        if self.command_dialog and self.command_dialog.winfo_exists():
             return
 
-        self.add_log("自动关机已触发，进入 30 秒倒计时")
+        command_bat = os.path.join(BASE_DIR, "command.bat")
+        if not os.path.exists(command_bat):
+            self.add_log("定时执行指令已触发，但未找到 command.bat 文件，已跳过")
+            messagebox.showerror(
+                "定时执行指令",
+                f"未找到指令文件：\n{command_bat}\n\n"
+                "请在程序根目录创建 command.bat，并在其中写入需要执行的指令。"
+            )
+            return
+
+        countdown = self._command_countdown
+        self.add_log(f"定时执行指令已触发，进入 {countdown} 秒倒计时")
 
         dialog = tk.Toplevel(self.root)
-        dialog.title("自动关机")
-        dialog.geometry("300x150")
+        dialog.title("定时执行指令")
+        dialog.geometry("340x150")
         dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -628,35 +685,48 @@ class USTCNetApp:
             except tk.TclError:
                 pass
 
-        countdown_var = tk.StringVar(value="30")
+        running = [True]
+
+        countdown_var = tk.StringVar(value=str(countdown))
         tk.Label(dialog, text="系统将在", font=("微软雅黑", 12)).pack(pady=(10, 0))
         tk.Label(dialog, textvariable=countdown_var, font=("微软雅黑", 24, "bold"), fg="red").pack()
-        tk.Label(dialog, text="秒后关机，是否取消？", font=("微软雅黑", 12)).pack()
+        tk.Label(dialog, text="秒后执行 command.bat，是否取消？", font=("微软雅黑", 12)).pack()
 
         button_frame = tk.Frame(dialog)
         button_frame.pack(pady=10)
 
-        def cancel_shutdown():
-            self.add_log("自动关机已取消")
+        def execute_command():
+            if not running[0]:
+                return
+            running[0] = False
+            self.add_log("正在执行 command.bat ...")
+            try:
+                subprocess.Popen(["cmd", "/c", command_bat], cwd=BASE_DIR)
+                self.add_log("command.bat 已启动")
+            except Exception as e:  # noqa: broad-except — 启动批处理失败时给出明确提示
+                self.add_log(f"执行 command.bat 失败: {e}")
+                messagebox.showerror("定时执行指令", f"执行 command.bat 失败:\n{e}")
             dialog.destroy()
 
-        def force_shutdown():
-            subprocess.run(["shutdown", "/s", "/t", "0"], capture_output=True, check=False)
+        def cancel_command():
+            running[0] = False
+            self.add_log("定时执行指令已取消")
+            dialog.destroy()
 
-        tk.Button(button_frame, text="立即关机", command=force_shutdown, width=10).pack(side=tk.LEFT, padx=5)
-        tk.Button(button_frame, text="取消", command=cancel_shutdown, width=10).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="立即执行", command=execute_command, width=10).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="取消", command=cancel_command, width=10).pack(side=tk.LEFT, padx=5)
 
         def update_countdown(remaining):
+            if not running[0]:
+                return
             if remaining >= 0:
                 countdown_var.set(str(remaining))
                 dialog.after(1000, update_countdown, remaining - 1)
             else:
-                # 倒计时结束，执行立即关机
-                subprocess.run(["shutdown", "/s", "/t", "0"], capture_output=True, check=False)
-                dialog.destroy()
+                execute_command()
 
-        update_countdown(30)
-        self.shutdown_dialog = dialog
+        update_countdown(countdown)
+        self.command_dialog = dialog
 
     def load_settings(self):
         config = self.config_manager.config
@@ -677,23 +747,33 @@ class USTCNetApp:
         self.fast_interval_var.set(str(config.get("fast_retry_interval", 60)))
         self.startup_var.set(config.get("auto_start", False))
 
-        shutdown_hour = config.get("shutdown_hour", 23)
-        shutdown_minute = config.get("shutdown_minute", 0)
-        self.shutdown_hour_var.set(f"{int(shutdown_hour):02d}")
-        self.shutdown_minute_var.set(f"{int(shutdown_minute):02d}")
-        self._shutdown_hour = int(shutdown_hour)
-        self._shutdown_minute = int(shutdown_minute)
-        self.auto_shutdown_var.set(config.get("auto_shutdown", False))
+        command_hour = config.get("command_hour", 23)
+        command_minute = config.get("command_minute", 0)
+        self.command_hour_var.set(f"{int(command_hour):02d}")
+        self.command_minute_var.set(f"{int(command_minute):02d}")
+        self._command_hour = int(command_hour)
+        self._command_minute = int(command_minute)
+        command_countdown = config.get("command_countdown", 30)
+        self.command_countdown_var.set(str(int(command_countdown)))
+        self._command_countdown = int(command_countdown)
+        self._command_last_triggered = config.get("command_last_triggered", "")
+        self.auto_command_var.set(config.get("auto_command", False))
 
-        if self.auto_shutdown_var.get():
-            self.start_shutdown_watcher()
+        if self.auto_command_var.get():
+            self.start_command_watcher()
 
     def save_settings(self):
         try:
-            h = int(self.shutdown_hour_var.get())
-            m = int(self.shutdown_minute_var.get())
+            h = int(self.command_hour_var.get())
+            m = int(self.command_minute_var.get())
         except ValueError:
             h, m = 23, 0
+        try:
+            countdown = int(self.command_countdown_var.get())
+            if countdown < 1:
+                countdown = 1
+        except ValueError:
+            countdown = 30
         config = {
             "username": self.username_var.get(),
             "password": self.password_var.get() if self.remember_password_var.get() else "",
@@ -702,15 +782,19 @@ class USTCNetApp:
             "fast_retry_interval": int(self.fast_interval_var.get()) if self.fast_interval_var.get().isdigit() else 60,
             "normal_check_interval": int(self.normal_interval_var.get()) if self.normal_interval_var.get().isdigit() else 900,
             "auto_start": self.startup_var.get(),
-            "auto_shutdown": self.auto_shutdown_var.get(),
-            "shutdown_hour": h,
-            "shutdown_minute": m,
+            "auto_command": self.auto_command_var.get(),
+            "command_hour": h,
+            "command_minute": m,
+            "command_countdown": countdown,
+            "command_last_triggered": self._command_last_triggered,
         }
         self.config_manager.save_config(config)
-        self._shutdown_hour = h
-        self._shutdown_minute = m
-        self.shutdown_hour_var.set(f"{h:02d}")
-        self.shutdown_minute_var.set(f"{m:02d}")
+        self._command_hour = h
+        self._command_minute = m
+        self._command_countdown = countdown
+        self.command_hour_var.set(f"{h:02d}")
+        self.command_minute_var.set(f"{m:02d}")
+        self.command_countdown_var.set(str(countdown))
 
     def clear_saved_password(self):
         self.password_var.set("")
@@ -816,8 +900,8 @@ class USTCNetApp:
             self.start_button.config(state=tk.DISABLED)
             self.stop_button.config(state=tk.NORMAL)
             self.add_log("开始监控网络连接")
-            if self.auto_shutdown_var.get():
-                self.start_shutdown_watcher()
+            if self.auto_command_var.get():
+                self.start_command_watcher()
 
     def stop_monitoring(self):
         if self.network_manager.running:
@@ -864,7 +948,7 @@ class USTCNetApp:
         self.root.deiconify()
 
     def quit_app(self, _icon, _item):
-        self.stop_shutdown_watcher()
+        self.stop_command_watcher()
         self.network_manager.stop_monitoring()
         self.icon.stop()
         self.root.quit()

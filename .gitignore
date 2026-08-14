@@ -5,8 +5,8 @@ dist/
 *.spec
 __pycache__/
 *.pyc
-config.json
-logs/
+*/config.json
+*/logs/
 icon.ico
 icon.png
 icon.psd
