@@ -19,7 +19,9 @@ from PIL import Image, ImageDraw
 
 # ---------- 单实例检查 ----------
 MUTEX_NAME = "Global\\ReUSTCNet_SingleInstance"
+APP_TITLE = "USTC 有线网络登录重连器"
 kernel32 = ctypes.windll.kernel32
+user32 = ctypes.windll.user32
 kernel32.CreateMutexW.argtypes = [wintypes.LPCVOID, wintypes.BOOL, wintypes.LPCWSTR]
 kernel32.CreateMutexW.restype = wintypes.HANDLE
 kernel32.GetLastError.restype = wintypes.DWORD
@@ -29,12 +31,24 @@ def is_already_running():
     if not mutex:
         return True
     if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-        ctypes.windll.kernel32.CloseHandle(mutex)
+        kernel32.CloseHandle(mutex)
         return True
     return False
 
+def bring_existing_to_front():
+    """查找已有实例的窗口并置于前台，成功返回 True"""
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = wintypes.HWND
+    hwnd = user32.FindWindowW(None, APP_TITLE)
+    if not hwnd:
+        return False
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE：若最小化则恢复
+    user32.SetForegroundWindow(hwnd)
+    return True
+
 if is_already_running():
-    ctypes.windll.user32.MessageBoxW(0, "ReUSTCNet 已经在运行。", "USTC 网络重连器", 0x40)
+    if not bring_existing_to_front():
+        user32.MessageBoxW(0, "ReUSTCNet 已经在运行。", APP_TITLE, 0x40)
     sys.exit(0)
 
 # ---------- 路径 ----------
@@ -418,7 +432,7 @@ class USTCNetApp:
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("USTC 有线网络登录重连器")
+        self.root.title(APP_TITLE)
         self.root.geometry("600x550")
         if ICON_PATH:
             self.root.iconbitmap(ICON_PATH)
@@ -701,7 +715,7 @@ class USTCNetApp:
             running[0] = False
             self.add_log("正在执行 command.bat ...")
             try:
-                subprocess.Popen(["cmd", "/c", command_bat], cwd=BASE_DIR)
+                subprocess.Popen(["cmd", "/c", command_bat], cwd=BASE_DIR)  # pylint: disable=consider-using-with
                 self.add_log("command.bat 已启动")
             except Exception as e:  # noqa: broad-except — 启动批处理失败时给出明确提示
                 self.add_log(f"执行 command.bat 失败: {e}")
@@ -769,9 +783,7 @@ class USTCNetApp:
         except ValueError:
             h, m = 23, 0
         try:
-            countdown = int(self.command_countdown_var.get())
-            if countdown < 1:
-                countdown = 1
+            countdown = max(int(self.command_countdown_var.get()), 1)
         except ValueError:
             countdown = 30
         config = {
