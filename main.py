@@ -152,6 +152,7 @@ class ConfigManager:
                     config["command_minute"] = config.pop("shutdown_minute", 0)
                     config.setdefault("command_countdown", 30)
                 config.setdefault("command_last_triggered", "")
+                config.setdefault("auto_close_proxy", False)
                 return config
             except Exception:  # noqa: broad-except — 配置文件损坏时回退到默认配置
                 pass
@@ -164,6 +165,7 @@ class ConfigManager:
             "fast_retry_interval": 60,
             "normal_check_interval": 900,
             "auto_start": False,
+            "auto_close_proxy": False,
             "auto_command": False,
             "command_hour": 23,
             "command_minute": 0,
@@ -333,12 +335,28 @@ class NetworkManager:
             return True, f"当前连接到: {self.get_current_port_info()}"
         return False, msg
 
+    @staticmethod
+    def close_system_proxy():
+        """关闭 Windows 系统代理开关（保留代理地址）"""
+        try:
+            result = subprocess.run(
+                ["reg", "add",
+                 r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                 "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f"],
+                capture_output=True, check=False)
+            return result.returncode == 0
+        except Exception as e:  # noqa: broad-except — reg 命令执行失败时给出提示
+            print(f"关闭系统代理失败: {e}")
+            return False
+
     def start_monitoring(self, status_callback):
         self.running = True
         fast_interval = self.config_manager.config["fast_retry_interval"]
         normal_interval = self.config_manager.config["normal_check_interval"]
+        auto_close_proxy = self.config_manager.config.get("auto_close_proxy", False)
         interval = fast_interval
         state = "fast"
+        proxy_closed = False
         status_callback("正在初始化连接...", None)
         success, msg = self.full_reconnect()
         status_callback(msg, not success)
@@ -352,6 +370,10 @@ class NetworkManager:
                     if self.check_permission():
                         status_callback(f"连接正常 - 当前连接到: {self.get_current_port_info()}", False)
                     else:
+                        if auto_close_proxy and not proxy_closed:
+                            if self.close_system_proxy():
+                                proxy_closed = True
+                                status_callback("检测到断网，已关闭系统代理", True)
                         status_callback("网络异常，正在重连...", True)
                         success, msg = self.full_reconnect()
                         status_callback(msg, not success)
@@ -361,13 +383,19 @@ class NetworkManager:
                             state = "fast"
                 else:  # state == "fast"
                     if self.check_permission():
+                        proxy_closed = False
                         status_callback(f"网络已恢复 - 当前连接到: {self.get_current_port_info()}", False)
                         interval = normal_interval
                         state = "normal"
                         continue
+                    if auto_close_proxy and not proxy_closed:
+                        if self.close_system_proxy():
+                            proxy_closed = True
+                            status_callback("检测到断网，已关闭系统代理", True)
                     status_callback("网络断开，尝试重连...", True)
                     success, msg = self.full_reconnect()
                     if success:
+                        proxy_closed = False
                         status_callback(msg, False)
                         interval = normal_interval
                         state = "normal"
@@ -415,6 +443,8 @@ class USTCNetApp:
     export_type_combo: ttk.Combobox
     normal_interval_var: tk.StringVar
     fast_interval_var: tk.StringVar
+    auto_close_proxy_var: tk.BooleanVar
+    auto_close_proxy_cb: ttk.Checkbutton
     startup_var: tk.BooleanVar
     startup_check: ttk.Checkbutton
     clear_startup_btn: ttk.Button
@@ -546,15 +576,24 @@ class USTCNetApp:
                                               state="readonly", width=40)
         self.export_type_combo.grid(row=0, column=1, sticky="we", padx=(5, 0))
 
-        ttk.Label(settings_frame, text="一般连接检测时间(秒):").grid(row=1, column=0, sticky="w", padx=(0, 5), pady=(5, 0))
-        self.normal_interval_var = tk.StringVar()
-        ttk.Entry(settings_frame, textvariable=self.normal_interval_var, width=10).grid(row=1, column=1, sticky="w",
-                                                                                        padx=(5, 0), pady=(5, 0))
+        # 检测时间（同一行）
+        interval_frame = ttk.Frame(settings_frame)
+        interval_frame.grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 0))
 
-        ttk.Label(settings_frame, text="断网重连检测时间(秒):").grid(row=2, column=0, sticky="w", padx=(0, 5), pady=(5, 0))
+        ttk.Label(interval_frame, text="一般连接检测时间(秒):").pack(side=tk.LEFT)
+        self.normal_interval_var = tk.StringVar()
+        ttk.Entry(interval_frame, textvariable=self.normal_interval_var, width=8).pack(side=tk.LEFT, padx=(0, 15))
+
+        ttk.Label(interval_frame, text="断网重连检测时间(秒):").pack(side=tk.LEFT)
         self.fast_interval_var = tk.StringVar()
-        ttk.Entry(settings_frame, textvariable=self.fast_interval_var, width=10).grid(row=2, column=1, sticky="w",
-                                                                                      padx=(5, 0), pady=(5, 0))
+        ttk.Entry(interval_frame, textvariable=self.fast_interval_var, width=8).pack(side=tk.LEFT)
+
+        # 断网时自动关闭系统代理
+        self.auto_close_proxy_var = tk.BooleanVar()
+        self.auto_close_proxy_cb = ttk.Checkbutton(settings_frame, text="断网时自动关闭系统代理",
+                                                   variable=self.auto_close_proxy_var,
+                                                   command=self.save_settings)
+        self.auto_close_proxy_cb.grid(row=2, column=0, columnspan=2, sticky="w", padx=(5, 0), pady=(5, 0))
 
         # 分隔线与自启动行
         ttk.Separator(settings_frame, orient='horizontal').grid(row=3, column=0, columnspan=2, sticky="we", pady=(10, 0))
@@ -759,6 +798,7 @@ class USTCNetApp:
 
         self.normal_interval_var.set(str(config.get("normal_check_interval", 900)))
         self.fast_interval_var.set(str(config.get("fast_retry_interval", 60)))
+        self.auto_close_proxy_var.set(config.get("auto_close_proxy", False))
         self.startup_var.set(config.get("auto_start", False))
 
         command_hour = config.get("command_hour", 23)
@@ -794,6 +834,7 @@ class USTCNetApp:
             "fast_retry_interval": int(self.fast_interval_var.get()) if self.fast_interval_var.get().isdigit() else 60,
             "normal_check_interval": int(self.normal_interval_var.get()) if self.normal_interval_var.get().isdigit() else 900,
             "auto_start": self.startup_var.get(),
+            "auto_close_proxy": self.auto_close_proxy_var.get(),
             "auto_command": self.auto_command_var.get(),
             "command_hour": h,
             "command_minute": m,

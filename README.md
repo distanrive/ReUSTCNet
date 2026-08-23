@@ -12,6 +12,7 @@
 - 图形界面（Tkinter），实时显示连接状态与当前出口
 - 系统托盘图标，左键单击显示窗口，支持隐藏到后台
 - 可自定义检测间隔、出口类型、是否开机自启
+- 断网时自动关闭 Windows 系统代理（可选开关）
 - 密码使用 Windows 数据保护 API (DPAPI) 加密存储，仅当前用户可解密
 - 一键清除已保存密码或删除开机自启注册表项
 - 定时执行指令：到达设定时间后弹出确认倒计时，倒计时结束执行程序根目录下的 `command.bat`
@@ -99,6 +100,7 @@ python main.py
   "fast_retry_interval": 60,
   "normal_check_interval": 900,
   "auto_start": false,
+  "auto_close_proxy": false,
   "auto_command": false,
   "command_hour": 23,
   "command_minute": 0,
@@ -115,6 +117,7 @@ python main.py
 | `fast_retry_interval`   | 断网时快速重试的间隔（秒）                                   |
 | `normal_check_interval` | 正常联网时检测间隔（秒）                                     |
 | `auto_start`            | 是否启用自启动（程序启动后自动开始监控，并在注册表添加开机自启） |
+| `auto_close_proxy`      | 是否在断网时自动关闭 Windows 系统代理                        |
 | `auto_command`          | 是否启用定时执行指令                                         |
 | `command_hour`          | 指令运行时间（小时，0-23）                                   |
 | `command_minute`        | 指令运行时间（分钟，0-59）                                   |
