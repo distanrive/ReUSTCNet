@@ -62,7 +62,7 @@ if defined ICON_FILE if exist "%ICON_FILE%" set "ICON_ARG=--icon=%ICON_FILE%"
 set "ADD_DATA_ARG="
 if defined ICON_FILE if exist "%ICON_FILE%" set "ADD_DATA_ARG=--add-data=%ICON_FILE%;."
 
-"%VENV_DIR%\Scripts\pyinstaller.exe" --onefile --noconsole --clean %UPX_ARG% %ICON_ARG% %ADD_DATA_ARG% --name="%EXE_NAME%" --hidden-import=_tkinter main.py
+"%VENV_DIR%\Scripts\pyinstaller.exe" --onedir --noconsole --clean %UPX_ARG% %ICON_ARG% %ADD_DATA_ARG% --name="%EXE_NAME%" --hidden-import=_tkinter main.py
 if errorlevel 1 (
     echo [ERROR] Build failed.
     pause
@@ -75,7 +75,7 @@ rmdir /s /q "%PROJECT_DIR%build"
 del /q "%EXE_NAME%.spec" >nul 2>&1
 
 echo [5/5] Build success!
-echo Output: %PROJECT_DIR%dist\%EXE_NAME%.exe
-dir "%PROJECT_DIR%dist\%EXE_NAME%.exe" | findstr /i "%EXE_NAME%.exe"
+echo Output: %PROJECT_DIR%dist\%EXE_NAME%\
+dir "%PROJECT_DIR%dist\%EXE_NAME%" | findstr /i "%EXE_NAME%.exe"
 explorer "%PROJECT_DIR%dist"
 pause

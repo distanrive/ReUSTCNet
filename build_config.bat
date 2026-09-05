@@ -8,7 +8,7 @@
 set "PYTHON_EXE=C:\Users\YH\.conda\envs\normal\python.exe"
 
 :: UPX 可执行文件所在目录（留空则不使用 UPX 压缩）
-set "UPX_DIR=D:\python_sourse\upx-5.2.0-win64"
+set "UPX_DIR="
 
 :: 生成的 exe 名称
 set "EXE_NAME=reustcnet"
