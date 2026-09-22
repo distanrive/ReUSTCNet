@@ -1,13 +1,33 @@
-.idea/
+# ---------- Godot 编辑器状态 ----------
+.godot/
+
+# ---------- 运行期生成（配置 / 日志 / 密钥 / 用户指令） ----------
+# 程序默认把配置写在 exe 同级目录（写不进去才退回 user://），开发期就是工程目录
+config.cfg
+logs/
+.key
+command.bat
+
+# ---------- 图标源文件 ----------
+# 保留在工作区（导出 exe 时要用），但不进仓库 —— 与旧版一致
+icon.ico
+icon.png
+icon.psd
+icon.png.import
+
+# ---------- 旧版 Python 实现 ----------
+# 本地存档，不作为构建产物。**注意**：这里被忽略意味着 oldversion/ 下的内容不进仓库，
+# 只存在于本地工作区和 git 历史（旧路径 `main.py` 仍然可以 `git show <旧提交>:main.py` 取回）。
+# 想让它们进仓库，把下面这行删掉即可。
+oldversion/
+
+# ---------- Python ----------
 build_venv/
 build/
 dist/
 *.spec
 __pycache__/
 *.pyc
-*/config.json
-*/logs/
-icon.ico
-icon.png
-icon.psd
-oldversion/
+
+# ---------- IDE ----------
+.idea/

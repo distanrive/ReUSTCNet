@@ -1,0 +1,13 @@
+# cmd.exe 要求 .bat 必须以 CRLF 结尾 —— 只有 LF 的话它会吃掉行内字符
+# （症状是 `'OT_EXE'`、`'cho'` 这种半截命令）。详见 CLAUDE.md 的「打包」一节。
+#
+# 本机 core.autocrlf=true，工作区里本来就存的是 CRLF，看着没问题；
+# 但仓库里存的是 LF，autocrlf=false 的机器（或 Linux/macOS 上 clone）取出来就是 LF，
+# .bat 直接坏掉。这条把它钉死。
+*.bat text eol=crlf
+
+# 同理，这个后缀也是给 cmd 读的，不能被动过
+*.cmd text eol=crlf
+
+# 本文件自身保持 LF
+.gitattributes text eol=lf

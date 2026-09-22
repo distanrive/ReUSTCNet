@@ -1,0 +1,38 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+;
+; 注意：用编辑器打开过工程后这个文件会被重写成「只留非默认项 + 抹掉所有注释」，
+; 所以「为什么这么设」要写进 CLAUDE.md，不要只写在注释里。
+
+config_version=5
+
+[application]
+
+config/name="ReUSTCNet"
+config/description="中国科大有线网自动登录与断线重连工具"
+config/version="2.0.0"
+run/main_scene="res://scenes/app.tscn"
+config/features=PackedStringArray("4.7")
+config/icon="res://themes/icons/app.svg"
+
+[autoload]
+
+ThemeManager="*res://scripts/autoload/theme_manager.gd"
+AppShell="*res://scripts/autoload/app_shell.gd"
+AppConfig="*res://scripts/autoload/app_config.gd"
+InstanceGuard="*res://scripts/autoload/instance_guard.gd"
+
+[display]
+
+window/size/viewport_width=1080
+window/size/viewport_height=720
+window/size/resizable=true
+
+[rendering]
+
+environment/defaults/default_clear_color=Color(0.957, 0.961, 0.969, 1)

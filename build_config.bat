@@ -1,20 +1,34 @@
 @echo off
-:: ============================================
-:: USTC ReUSTCNet 打包配置文件
-:: 请根据你的环境修改以下路径
-:: ============================================
+:: ============================================================
+::  ReUSTCNet build settings
+::  Only this file needs editing when you move to another machine.
+::  (ASCII only + CRLF -- see the note at the top of build.bat.)
+:: ============================================================
 
-:: Python 解释器路径（Anaconda 或标准 Python）
-set "PYTHON_EXE=C:\Users\YH\.conda\envs\normal\python.exe"
+:: Godot executable. Use the *_console.exe* one, otherwise build.bat
+:: cannot show the export log or the errors.
+set "GODOT_EXE=D:\Program Files\Godot_v4.7.2-stable_win64\Godot_v4.7.2-stable_win64_console.exe"
 
-:: UPX 可执行文件所在目录（留空则不使用 UPX 压缩）
-set "UPX_DIR="
+:: Export preset name -- must match name= in export_presets.cfg exactly.
+set "PRESET=Windows Desktop"
 
-:: 生成的 exe 名称
-set "EXE_NAME=reustcnet"
+:: Output folder and file name.
+set "OUT_DIR=dist"
+set "EXE_NAME=ReUSTCNet"
 
-:: conda 环境的 Library\bin 路径（用于补充 DLL，标准 Python 不需要）
-set "ANACONDA_LIB_BIN=C:\Users\YH\.conda\envs\normal\Library\bin"
+:: Run a smoke test after building (headless, 240 frames, greps for engine errors).
+:: 1 = yes, 0 = no
+set "SMOKE_TEST=1"
 
-:: 程序图标文件（可选，留空则不设置图标）
-set "ICON_FILE=icon.ico"
+:: Also produce a release archive: none / zip / rar
+::   rar needs WinRAR (give the full path to Rar.exe below).
+set "PACK=rar"
+set "RAR_EXE=C:\Program Files\WinRAR\Rar.exe"
+
+:: Custom (slim) export template compiled by yourself -- see tools/build_template.sh.
+:: The official Windows template is 104 MB; this one is ~34 MB after removing
+:: 3D/audio/navigation/XR/texture-codec modules that this project never uses.
+:: build.bat copies it over windows_release_x86_64.exe in the templates folder,
+:: backing up the official one once as windows_release_x86_64.official.bak.
+:: Empty = use the official template as-is.
+set "CUSTOM_TEMPLATE=D:\godot-build\godot\bin\godot.windows.template_release.x86_64.exe"

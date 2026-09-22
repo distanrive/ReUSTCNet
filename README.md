@@ -1,175 +1,273 @@
-# ReUSTCNet - 中国科大有线网自动登录与断线重连工具
+# ReUSTCNet — 中国科大有线网自动登录与断线重连工具
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-适用于 **中国科学技术大学（USTC）有线网络** [`wlt.ustc.edu.cn`](http://wlt.ustc.edu.cn) 的后台自动登录与网络保持工具。  
-支持断线自动重连、开机自启、系统托盘运行，密码使用 Windows DPAPI 加密存储。
+适用于 **中国科学技术大学（USTC）有线网络** [`wlt.ustc.edu.cn`](http://wlt.ustc.edu.cn) 的后台自动登录与网络保持工具。
+支持断线自动重连、开机自启、系统托盘运行，密码加密存储。
 
-## 功能
-
-- 自动登录并选择出口（教育网、电信、联通、移动等）
-- 网络断开后自动重连，支持快速重试与常规检测双模式
-- 图形界面（Tkinter），实时显示连接状态与当前出口
-- 系统托盘图标，左键单击显示窗口，支持隐藏到后台
-- 可自定义检测间隔、出口类型、是否开机自启
-- 断网时自动关闭 Windows 系统代理（可选开关）
-- 密码使用 Windows 数据保护 API (DPAPI) 加密存储，仅当前用户可解密
-- 一键清除已保存密码或删除开机自启注册表项
-- 定时执行指令：到达设定时间后弹出确认倒计时，倒计时结束执行程序根目录下的 `command.bat`
-- 单文件 EXE 发布，无需安装 Python 环境
+界面用 **Godot 4.7**（纯 GDScript，无 Python 运行时）实现，用一套集中管理的设计令牌（`scripts/theme/theme_palette.gd`）
+驱动全局样式 —— 颜色、字号、圆角、间距改一处即全界面生效。
 
 ## 截图
 
-![Snipaste_2026-08-14_13-43-56](README.assets/Snipaste_2026-08-14_13-43-56.png)
+![界面](README.assets/ui.png)
+
+## 功能
+
+- 自动登录并选择出口（教育网、电信、联通、移动等 9 个出口）
+- 网络断开后自动重连，支持快速重试与常规检测双模式
+- 实时显示连接状态、目标出口、本机 IP、连续运行时长、最后检测结果
+- 系统托盘图标：关闭窗口时隐藏到后台，托盘菜单可显示主界面 / 启停监控 / 退出
+- 断网时自动关闭 Windows 系统代理（可选开关）
+- 密码用 AES-256 加密存储，密钥绑定当前 Windows 用户（见下方「密码安全」）
+- 一键清除已保存的密码或删除开机自启注册表项
+- 定时执行指令：到达设定时间后弹出确认倒计时，倒计时结束执行程序目录下的 `command.bat`
+- 单实例运行；重复启动会把已有窗口叫到前台
+- 界面缩放手动档位（跟随系统 / 100%～200%），记在配置里
 
 ## 使用方式
 
 ### 直接运行（已打包）
 
-从 [Releases](https://github.com/distanrive/ReUSTCNet/releases) 页面下载最新的 `reustcnet.exe`，双击运行。  
-首次使用需输入账号密码，勾选“记住密码”后会自动加密保存。
+从 [Releases](https://github.com/distanrive/ReUSTCNet/releases) 页面下载最新的 `reustcnet.exe`，双击运行。
+首次使用需输入账号密码，勾选「记住密码」后会自动加密保存。
 
-> **注意**：如果 Windows 弹出“Windows 保护了你的电脑”，请点击“更多信息” -> “仍要运行”。
+> **注意**：如果 Windows 弹出「Windows 保护了你的电脑」，请点击「更多信息」→「仍要运行」。
 
 ### 从源码运行
 
+需要 **Godot 4.7.x 标准版**（GDScript，非 .NET）。用 Godot 打开本目录，按 **F5** 运行即可，没有任何其他依赖。
+
 ```bash
-# 克隆仓库
-git clone https://github.com/distanrive/ReUSTCNet.git
-cd ReUSTCNet
-
-# 安装依赖
-pip install requests pystray pillow
-
-# 运行
-python main.py
+godot --path . --quit-after 120          # 无人值守跑一遍，看有无报错
+godot --path .                           # 正常打开界面
+godot --path . -- --ui-scale=1.5         # 临时指定界面缩放
 ```
+
+### 自检
+
+平台相关的部分（编码解码、表单编码、密码加解密、注册表读写）有一份自检，改动这几处之后跑一下：
+
+```bash
+godot --headless --path . --script res://tools/self_check.gd
+```
+
+它只碰本程序自己的注册表键（`HKCU\Software\ReUSTCNet*`），跑完清理干净，
+**不会动你的系统代理、系统自启项或任何其他设置**。退出码 0 = 全通过。
+
+> 这是**开发期工具**，需要 Godot 本体才能运行；导出的 exe 里不带它
+> （发布版模板不会执行 `--script` 指定的脚本，带上也是死重量）。
 
 ### 定时执行指令
 
-1. 在程序界面勾选“定时执行指令”，在同一行设置**运行时间**（24 小时制，精确到分钟）与**确认倒计时**（秒）。
-2. 在程序根目录（`main.py` 或 `reustcnet.exe` 所在目录）新建 `command.bat`，自行写入需要定时执行的指令，例如：
+1. 在界面「定时执行指令」卡片里勾选「启用」，设置**运行时间**（24 小时制）与**确认倒计时**（秒）。
+2. 在程序目录下新建 `command.bat`，写入需要定时执行的指令，例如：
 
    ```batch
    @echo off
    shutdown /s /t 0
    ```
 
-3. 到达设定时间后，程序会弹出确认倒计时窗口；倒计时结束或点击“立即执行”后，会执行 `command.bat`。
-4. 若触发时根目录下不存在 `command.bat`，程序会提示并跳过本次执行。
-5. 每次成功触发后程序会记录“已触发”，同一分钟只执行一次，执行后即使立即重启也不会重复触发；如当天需要再次执行，点击界面上的「重置触发」按钮即可。
+3. 到达设定时间后弹出确认倒计时窗口，环形进度条走完（或长按「立即执行」1 秒）后执行 `command.bat`。
+4. 若触发时程序目录下不存在 `command.bat`，会提示并跳过本次执行。
+5. 同一分钟只触发一次；**点「取消」不算已触发**，当天还能再响，也可以点「重置触发状态」手动清掉记录。
 
-## 打包
-
-项目提供了 `build.bat` 一键打包脚本，依赖：
-
-- Python 3.12+（推荐使用 Anaconda 或标准 Python）
-- [UPX](https://upx.github.io/)（可选，用于压缩体积）
-- 一个自定义图标文件 `icon.ico`（可选）
-
-### 打包步骤
-
-1. **编辑 `build_config.bat`**，按实际环境修改以下路径：
-
-   ```batch
-   :: Python 解释器路径
-   set "PYTHON_EXE=C:\ProgramData\anaconda3\python.exe"
-   :: UPX 目录（不需要则留空）
-   set "UPX_DIR=D:\tools\upx-5.2.0-win64\upx"
-   :: Anaconda 的 Library\bin 目录（标准 Python 用户可留空）
-   set "ANACONDA_LIB_BIN=C:\ProgramData\anaconda3\Library\bin"
-   :: 程序图标（可选，留空则不使用自定义图标）
-   set "ICON_FILE=icon.ico"
-   ```
-
-2. **将你的 `icon.ico` 放入项目根目录**（如果使用自定义图标）。
-
-3. **双击 `build.bat`**，等待片刻。生成的 `dist\reustcnet.exe` 即为单文件程序。
-
-> 打包过程中会自动创建一个临时虚拟环境，结束后自动清理，不会影响系统 Python 环境。
+> 「立即执行」是长按按钮，需要按住 1 秒才触发 —— `command.bat` 里通常写的是不可撤销的指令，
+> 误点一次代价太大。
 
 ## 配置说明
 
-配置文件 `config.json` 自动保存在程序所在目录，格式如下：
+配置**默认写在程序所在目录**（绿色版；开发期就是工程目录）。若该目录不可写（例如装在
+`C:\Program Files` 下），会自动退到 `%APPDATA%\Godot\app_userdata\ReUSTCNet\`，
+并在启动日志里明确提示。界面日志区的头几行会打印实际使用的路径。
 
-```json
-{
-  "username": "your_account",
-  "password": "enc:ABCDEFG...",
-  "export_type": "0",
-  "fast_retry_interval": 60,
-  "normal_check_interval": 900,
-  "auto_start": false,
-  "auto_close_proxy": false,
-  "auto_command": false,
-  "command_hour": 23,
-  "command_minute": 0,
-  "command_countdown": 30,
-  "command_last_triggered": ""
-}
-```
+配置文件是 Godot 的 `ConfigFile` 格式（`config.cfg`），业务字段在 `[app]` 段：
 
-| 字段                    | 说明                                                         |
-| ----------------------- | ------------------------------------------------------------ |
-| `username`              | 校园网账号                                                   |
-| `password`              | 加密后的密码（运行时会解密使用）                             |
-| `export_type`           | 出口编号：0-教育网出口, 1-电信网出口, 2-联通网出口, 3-电信网出口2, 4-联通网出口2, 5-电信网出口3, 6-联通网出口3, 7-教育网出口2, 8-移动网出口 |
-| `fast_retry_interval`   | 断网时快速重试的间隔（秒）                                   |
-| `normal_check_interval` | 正常联网时检测间隔（秒）                                     |
-| `auto_start`            | 是否启用自启动（程序启动后自动开始监控，并在注册表添加开机自启） |
-| `auto_close_proxy`      | 是否在断网时自动关闭 Windows 系统代理                        |
-| `auto_command`          | 是否启用定时执行指令                                         |
-| `command_hour`          | 指令运行时间（小时，0-23）                                   |
-| `command_minute`        | 指令运行时间（分钟，0-59）                                   |
-| `command_countdown`     | 执行前的确认倒计时时长（秒）                                 |
-| `command_last_triggered`| 上次已触发的运行时间，用于防止重启后同一分钟重复触发；点「重置触发」清空 |
+| 字段 | 说明 |
+| --- | --- |
+| `username` | 校园网账号 |
+| `password` | 加密后的密码（`enc:` 前缀 + base64；运行时解密使用） |
+| `export_type` | 出口编号：0-教育网出口, 1-电信网出口, 2-联通网出口, 3-电信网出口2, 4-联通网出口2, 5-电信网出口3, 6-联通网出口3, 7-教育网出口2, 8-移动网出口 |
+| `fast_retry_interval` | 断网时快速重试的间隔（秒，默认 60） |
+| `normal_check_interval` | 正常联网时检测间隔（秒，默认 900） |
+| `remember_password` | 是否把密码写进配置文件（关闭时密码只在本次运行期间保留） |
+| `auto_close_proxy` | 是否在断网时自动关闭 Windows 系统代理 |
+| `auto_command` | 是否启用定时执行指令 |
+| `command_hour` / `command_minute` | 指令运行时间（24 小时制） |
+| `command_countdown` | 执行前的确认倒计时（秒） |
+| `command_last_triggered` | 上次**已执行**的时刻（`YYYY-MM-DD HH:MM`），用于防止重启后同一分钟重复触发 |
+| `auto_start_monitor` | 程序启动后是否自动开始监控 |
+| `minimize_to_tray` | 关闭窗口时是否隐藏到托盘（关掉则点关闭直接退出） |
+
+同一文件里还有 `[ui]`（界面缩放）与 `[window]`（窗口尺寸/最大化）两个段，由 `AppShell` 维护。
+
+### 从旧版 Python 程序迁移
+
+首次运行时会自动读取程序目录下的旧 `config.json`，导入其中的**非密码**字段，
+并把文件改名为 `config.json.imported`（不删除，方便你回头查看）。
+
+**密码导不过来**：旧版存的是 Windows DPAPI 密文，程序解不开，需要重新输入一次。
+导入这件事会在界面上明确提示，不会静默丢掉。
 
 ## 密码安全
 
-- 密码使用 **Windows DPAPI**（数据保护 API）加密，密钥与当前 Windows 用户账户绑定。
-- 密文存储在 `config.json` 中，即使文件泄露，也无法在其他用户或不同机器上解密。
-- 程序运行时会在内存中短暂保存明文密码用于登录，但绝不会记录到日志文件或显示在界面上。
-- 点击“清除已保存的密码”按钮可彻底删除配置文件中的密码。
+- 密码用 **AES-256-CBC** 加密后存进配置文件，每份密文带一个随机 IV。
+- 加密密钥是一串 32 字节随机数，第一次运行时生成后存在
+  `HKCU\Software\ReUSTCNet`（**只当前用户可读**）。
+- 所以：**配置文件被单独拷走（备份、同步到网盘、发给别人）也解不出密码** ——
+  密钥不在文件里，在你这台机器的注册表里。
+- 程序运行时会在内存中短暂保存明文密码用于登录，但不会记录到日志文件或显示在界面上。
+- 点「清除已保存的密码」可彻底删除配置文件里的密码。
+
+> **和旧版 DPAPI 的差别，如实说明**：能读到你当前 Windows 账户注册表的人，
+> 密钥和密文就一起拿到了。DPAPI 多一层「密钥绑在用户 master key 上」的保护 —— 这一层这里没有。
+> 也就是说：**登录了你的 Windows 账户的攻击者，两种方案都挡不住**；
+> 区别只在「配置文件单独泄漏」这一种情况下，而那种情况两者都防得住。
+>
+> 若注册表不可写（组策略、权限受限），密钥会**降级**成程序目录下的 `.key` 文件
+> （安全性低于注册表），此时启动日志里会有一行明确的警告，不会静默降级。
 
 ## 工作原理
 
-1. 程序启动后，若“自启动”选项开启且账号密码已设置，则自动开始监控。
-2. 首次连接会依次完成：获取本机 IP → 登录 → 开通网络（选择出口）。
-3. 联网成功后进入常规检测模式（默认每 900 秒检查一次），检测方式为读取 `http://wlt.ustc.edu.cn/cgi-bin/ip?cmd=disp` 页面，并检查是否包含 `权限: 国际`。
-4. 若检测到断网，立即尝试重连，并切换为快速重试模式（默认每 60 秒一次），直到恢复连接。
-5. 所有连接操作复用同一个 Session，减少不必要的登录请求。
+1. 程序启动后，若「启动后自动监控」已开启且账号密码已填，则自动开始监控。
+2. 首次连接依次完成：读取本机 IP → （必要时）登录 → 开通网络（选择出口）。
+3. 联网成功后进入常规检测模式（默认每 900 秒一次）：读取 `http://wlt.ustc.edu.cn/cgi-bin/ip?cmd=disp`，
+   检查页面是否包含 `权限: 国际`。
+4. 检测到断网则立即重连，并切换为快速重试模式（默认每 60 秒一次），直到恢复。
+5. 监控循环是**主线程上的一条协程**（`scripts/core/net_monitor.gd`），
+   靠 `await` 等 HTTP 与计时器，没有后台线程 —— 所以「停止」能在 0.25 秒内真正停下来。
+
+### 中文页面的编码
+
+`wlt.ustc.edu.cn` 的响应头是 `Content-Type: text/html`，**不带 charset**，页面里写着 `charset=gb2312`。
+所有「是否登录成功 / 出口是否开通」的判据都是中文串比对，编码一旦解错，判据会**静默失效**
+（表现为「网络明明是好的却一直报断网」）。处理顺序（`scripts/core/wlt_client.gd` 的 `decode_body`）：
+
+1. 页面声明的 charset 是权威依据 —— 但 Windows 上只有编码名 `gb2312` / `gb18030` 有效，
+   `936` / `GBK` / `cp936` 都会返回空串；
+2. 字节本身是合法 UTF-8（且含多字节字符）就直接按 UTF-8 解 —— 这一条兜住「没声明」和「声明写错」；
+3. 解出来出现替换字符（`�`）就换另一种再试。
+
+这几条都有回归项，见 `tools/self_check.gd`。
+
+## 目录结构
+
+```
+.
+├── project.godot                 # 工程配置 + autoload（无后端，纯 GDScript）
+├── scenes/app.tscn               # 主场景
+├── scripts/
+│   ├── app.gd                    # 主界面：建界面 / 绑定配置 / 接核心逻辑的信号
+│   ├── autoload/
+│   │   ├── theme_manager.gd      # 启动时构建并应用全局主题
+│   │   ├── app_shell.gd          # 窗口尺寸、DPI 缩放、配置落盘位置
+│   │   ├── app_config.gd         # 业务配置读写 + 旧版 config.json 导入
+│   │   └── instance_guard.gd     # 单实例 + 唤起已有窗口
+│   ├── theme/
+│   │   ├── theme_palette.gd      # 设计令牌（颜色/圆角/字号/间距，唯一可调来源）
+│   │   └── theme_factory.gd      # 由令牌构建完整 Theme
+│   ├── ui/                       # 可复用控件（StatusDot / Switch / TitledGroup / …）
+│   └── core/                     # 纯逻辑，不引用任何 UI
+│       ├── wlt_client.gd         # 取 IP / 登录 / 开通出口 / 检测 + 响应解码
+│       ├── net_monitor.gd        # 监控状态机（协程）
+│       ├── app_paths.gd          # 可写目录探测、日志目录、command.bat 查找
+│       ├── secret_store.gd       # 密码加解密
+│       ├── win_registry.gd       # 注册表读写（reg.exe）
+│       ├── win_system.gd         # 开机自启项、系统代理开关
+│       ├── win_shell.gd          # 起进程
+│       ├── command_scheduler.gd  # 定时执行指令
+│       └── log_store.gd          # 日志落盘 + 轮转 + 清理
+├── themes/icons/                 # 控件图标（SVG）
+├── tools/self_check.gd           # 平台相关部分的自检
+├── docs/code-review.md           # 旧版 main.py 的审阅记录
+├── oldversion/                   # 旧版 Python 实现（本地存档，见下）
+└── README.assets/                # 截图
+```
+
+> `oldversion/` 被 `.gitignore` 排除，是**本地存档**：旧版代码不在仓库里，
+> 但仍保存在 git 历史中（`git show <旧提交>:main.py` 可取回）。
+> 想让它们进仓库，把 `.gitignore` 里那一行删掉即可。
+
+## 打包
+
+一键脚本：
+
+```bat
+build.bat              :: 导出 release + 冒烟测试 + 压 rar
+build.bat debug        :: 导出 debug 版（带 console 包装，能看 print 输出）
+build.bat run          :: 导出后直接启动 exe
+build.bat test         :: 只导出 + 冒烟测试
+build.bat templates    :: 列出已安装的导出模板（排查模板缺失）
+```
+
+配置在 `build_config.bat` 里（Godot 路径、预设名、是否压包），换机器只改这一个文件。
+
+**产物是两个文件，必须一起分发**：
+
+| 文件 | 说明 |
+| --- | --- |
+| `dist\ReUSTCNet.exe` | 引擎本体，约 34 MB（用的是自编译的精简模板，见下） |
+| `dist\ReUSTCNet.pck` | 本项目的全部数据，约 126 KB |
+
+`command.bat` 放在 exe 同级目录。目标机器**不需要装 Python、不需要任何运行时**。
+
+### 首次打包前要装导出模板
+
+到 [Godot 下载页](https://godotengine.org/download/windows/) 下载与 Godot 版本对应的
+**Export Templates**（约 800 MB 的 `.tpz`，其实就是个 zip），解压到：
+
+```
+%APPDATA%\Godot\export_templates\4.7.2.stable\
+```
+
+解压后该目录下应当**直接**是 `version.txt`、`windows_release_x86_64.exe` 等文件，
+**不要再套一层 `templates\` 目录**（`.tpz` 里面自带这一层，要把它剥掉）。
+拿不准就先跑 `build.bat templates` 看看认到了什么。
+
+### 关于体积
+
+exe 里那 100 MB 全是 Godot 引擎本身（本项目的全部数据只有 126 KB），
+所以调资源、调导入设置都没用 —— 唯一的办法是**自己编译一个精简版引擎模板**。
+
+本项目就是这么做的，官方模板 104 MB 压到了 **34 MB**：
+
+| | 官方模板 | 本项目用的精简模板 | 旧版 Python 发布包 |
+| --- | --- | --- | --- |
+| exe | 104.1 MB | **33.9 MB** | ~17 MB |
+| rar 发布包 | 27.8 MB | **8.9 MB** | 18.9 MB |
+
+砍掉的都是本项目用不到的：3D 引擎、音频、导航、XR、物理、纹理压缩编解码、各种图片格式、
+多人联机等模块。**保留**了 SVG（图标）、高级文本服务器（中文排版）、glslang（着色器）、
+freetype、以及 OpenGL 兼容渲染路径（Vulkan 不可用时的兜底）。
+
+重新编译的完整步骤和**踩过的坑**见 `CLAUDE.md` 的「打包 → 体积」一节，
+脚本是 `tools/build_template.sh`，模板路径填在 `build_config.bat` 的 `CUSTOM_TEMPLATE`。
+不想折腾也能用官方模板：把 `CUSTOM_TEMPLATE` 清空即可，`build.bat` 会照常工作（exe 变回 104 MB）。
 
 ## 关于适配其他学校
 
-此工具主要针对 USTC 网络环境，但可以通过修改 `main.py` 中的 `NetworkManager` 类来适配其他校园网。  
-需抓取并修改以下内容（使用浏览器 F12 开发者工具）：
+此工具针对 USTC 网络环境，但改 `scripts/core/wlt_client.gd` 即可适配其他校园网。
+需抓取并修改以下内容（用浏览器 F12 开发者工具）：
 
-| 项目                   | 说明                                                         |
-| ---------------------- | ------------------------------------------------------------ |
-| **登录 URL**           | POST/GET 地址及参数（如 `cmd=login`, `username`, `password`, `ip` 等） |
-| **开通网络 URL**       | 选择出口的地址及参数（如 `cmd=set`, `type`, `exp`）          |
-| **成功判断文本**       | 登录成功/开通成功后页面出现的标志性文字（如“登录成功”、“权限: 国际”） |
-| **网络状态检测**       | 检测页面 URL 及关键字（如“权限: 国际”），或改用外部网站测试连通性 |
-| **IP 提取正则**        | 从页面中提取本机 IP 的正则表达式                             |
-| **页面编码**           | 响应编码（一般为 `gb2312` 或 `utf-8`，可在 `set_gb2312_encoding` 中修改） |
-| **CSRF Token**（如有） | 某些系统需先获取 Token 才能登录，可增加预请求逻辑            |
+| 项目 | 说明 |
+| --- | --- |
+| **登录 URL** | `BASE_URL`，以及 `login()` 里的 POST 参数（`cmd` / `name` / `password` / `ip` 等） |
+| **开通网络 URL** | `activate()` 里的参数（`cmd=set` / `type` / `exp`） |
+| **成功判断文本** | `MARK_*` 一组常量（如「登录成功」「权限: 国际」） |
+| **网络状态检测** | `check_permission()` 的检测页面与关键字 |
+| **IP 提取** | `_extract_ip()` |
+| **页面编码** | `decode_body()` 里声明的 charset 分支 |
+| **表单编码** | `_percent()`：本项目的站点是 GB2312 页面，表单参数按 GB2312 转义 |
+| **CSRF Token**（如有） | 某些系统需先获取 Token 才能登录，可在 `_request()` 前加一次预请求 |
 
-欢迎提交 PR 增加其他学校的适配分支或配置文件。
+改完记得跑一遍自检（`tools/self_check.gd` 里的编解码期望值也要跟着改）。
+欢迎提交 PR 增加其他学校的适配。
+
+## 致谢
+
+- [Godot Engine](https://godotengine.org/) — 界面与运行时（MIT）
+- 控件的交互设计参考了 PyQt-SiliconUI 的形态；本项目只借鉴交互，代码全部新写
 
 ## 开源许可
 
 本项目采用 [MIT License](LICENSE)，允许自由使用、修改和分发，详见 LICENSE 文件。
-
-## 贡献
-
-欢迎提交 Issue 或 Pull Request。你可以：
-
-- 报告 Bug 或提出新功能建议
-- 为其他学校编写适配配置
-- 改进 UI 或优化性能
-
-## 致谢
-
-- [pystray](https://github.com/moses-palmer/pystray) - 系统托盘支持 (LGPL-3.0)
-- [Pillow](https://github.com/python-pillow/Pillow) - 图像处理 (MIT-CMU)
-- [PyInstaller](https://github.com/pyinstaller/pyinstaller) - 程序打包 (GPLv2 with Bootloader Exception)
