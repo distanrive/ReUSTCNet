@@ -52,9 +52,19 @@ for m in $MODULES_OFF; do
     ARGS="$ARGS module_${m}_enabled=no"
 done
 
+# 类级裁剪的 profile（`.gdbuild`）。**必须在 cd 之前算出绝对路径** ——
+# 脚本马上要切到 Godot 源码目录去跑 scons，相对路径会指错地方。
+# 用 cygpath 转成 Windows 路径：scons 是原生 Windows 进程，不认 /d/... 这种 MSYS 路径。
+PROFILE_WIN="$(cygpath -w "$(cd "$(dirname "$0")/.." && pwd)/tools/reustcnet.gdbuild" 2>/dev/null || echo "")"
+if [ -z "$PROFILE_WIN" ] || [ ! -f "$PROFILE_WIN" ]; then
+    echo "[错误] 找不到类裁剪 profile: tools/reustcnet.gdbuild"
+    exit 1
+fi
+
 cd /d/godot-build/godot
 
 echo "开始编译（-j20，lto=full 的链接阶段会比较久）..."
+echo "类裁剪 profile: $PROFILE_WIN"
 echo "输出: bin/godot.windows.template_release.x86_64.exe"
 echo
 
@@ -68,14 +78,57 @@ echo
     optimize=size_extra \
     lto=full \
     disable_3d=yes \
+    disable_physics_2d=yes \
+    disable_xr=yes \
+    disable_navigation_2d=yes \
+    disable_navigation_3d=yes \
+    deprecated=no \
+    minizip=no \
+    sdl=no \
+    builtin_pcre2_with_jit=no \
+    disable_overrides=yes \
     d3d12=no \
     winrt=no \
     accesskit=no \
+    "build_profile=$PROFILE_WIN" \
     $ARGS
 
-# d3d12=no     —— 我们用 Vulkan（forward_plus）。官方默认还要编 D3D12 驱动，
-#                 而那需要额外的 DirectX 12 SDK 依赖；关掉既省事又省体积。
-# winrt=no     —— WinRT/OneCore TTS（语音合成），与本程序无关。
-# accesskit=no —— 屏幕阅读器无障碍支持，同样需要额外依赖。
-# **opengl3 保留**：它是 Vulkan 不可用时（RDP / 虚拟机 / 老 Intel 核显）的兜底，
-# 工控机和远程桌面上真会遇到，这点体积不值得省。
+# ---- 下面这一组是「core 开关」，与上面的模块开关**不是一回事**，别互相替代 ----
+# disable_physics_2d —— 纯 GUI，没有任何 2D 物理。只关模块
+#   （module_godot_physics_2d_enabled=no）的话，引擎还会留一条「退回 dummy server」的
+#   死路径并在启动时打警告；这个 core 开关才是真正把它编掉。
+# disable_xr / disable_navigation_2d/3d —— 同上：模块关了，节点与服务器还留着。
+# disable_overrides  —— 不用 override.cfg。
+# deprecated=no       —— 不要「兼容已废弃 API」的那一层。我们写的就是 4.7 的 API，
+#                       扩展用的也都是现行接口（classdb_register_extension_class6 等）。
+# minizip=no          —— 不用 ZIPReader / ZIPPacker（pck 不是 zip）。
+#
+# **brotli 千万别关**（踩过，而且症状极具迷惑性）：Godot 的内置字体全是 WOFF2 ——
+# thirdparty/fonts/ 下的 Inter_Regular/Inter_Bold（默认 UI 字体）与
+# DroidSansFallback（**中文兜底字体**），而 WOFF2 解压靠 FreeType + brotli
+# （modules/text_server_adv/SCsub 里的 FT_CONFIG_OPTION_USE_BROTLI）。
+# 关掉 brotli 的后果是：两种内置字体都加载不出来，文字**静默退化成 Windows 系统字体**
+# （数字与英文变衬线体、中文变宋体那样的细笔画），界面看着"字变小了/变淡了"，
+# 而日志里一行错都不报 —— 和当年 module_webp=no 把贴图全搞挂是同一类坑。
+# sdl=no              —— **SDL3 在 Windows 上只用于手柄输入**（display_server_windows.cpp
+#                       里唯一的用处就是 `JoypadSDL`），键盘鼠标 GUI 完全用不到。
+#                        这一个能扔掉整个 SDL3。
+# builtin_pcre2_with_jit=no —— 不用正则（wlt_client 的 IP 解析是手写扫描，见那里的注释）。
+#
+# ---- 刻意**不关**的 ----
+# opengl3  —— Vulkan 不可用时（RDP / 虚拟机 / 老 Intel 核显）的兜底，工控机和远程桌面上
+#             真会遇到，这点体积不值得省。相应地 vulkan 也保留（渲染器是 forward_plus）。
+# mbedtls  —— HTTPRequest 的 TLS。wlt 站点现在是 http://，但换 https 只差一个字符，
+#             把这条路留着。（core 的 AES 用的是 thirdparty 里的 mbedtls，与本模块无关。）
+# zstd     —— pck / FileAccess 的压缩。
+#
+# ---- 还有一步可做（本轮没做）：类级裁剪 ----
+# SCons 选项只能砍「模块」，砍「类」要靠 `build_profile=<.gdbuild>` 里的
+# `disabled_classes`。它**只能由编辑器 GUI 生成**（项目 → 工具 → Engine Compilation
+# Configuration Editor → Detect from Project → Save As），没有 CLI ——
+# `EditorBuildProfileManager::_detect_from_project()` 没有暴露给脚本。
+# 工程里那份 tools/reustcnet.gdbuild 目前只有 disabled_build_options（等于把命令行抄了一遍），
+# **classes 列表是空的**，所以现在编进去没有任何额外效果。
+# 要用它：先在编辑器里点一次 Detect from Project 存到同一个文件，再把下面这行打开：
+#     build_profile=tools/reustcnet.gdbuild
+

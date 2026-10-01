@@ -75,6 +75,7 @@ func save() -> void:
 	cfg.set_value(SEC, "command_countdown", int(get_value("command_countdown")))
 	cfg.set_value(SEC, "command_last_triggered", str(get_value("command_last_triggered")))
 	cfg.set_value(SEC, "minimize_to_tray", bool(get_value("minimize_to_tray")))
+	cfg.set_value(SEC, "legacy_autostart_checked", bool(get_value("legacy_autostart_checked")))
 	cfg.set_value(SEC, "password", _cipher_for_disk())
 	AppShell.save_config()
 
@@ -121,6 +122,9 @@ static func _defaults() -> Dictionary:
 		"command_countdown": 30,
 		"command_last_triggered": "",
 		"minimize_to_tray": true,         # 关闭窗口时隐藏到托盘（监控类工具的合理默认）
+		# 「旧版注册表自启项搬迁」这个一次性动作做过了没有。放配置里而不是每次启动去查，
+		# 是因为查一次要起一个 reg.exe（见 app.gd 的 _migrate_autostart_once）。
+		"legacy_autostart_checked": false,
 	}
 
 

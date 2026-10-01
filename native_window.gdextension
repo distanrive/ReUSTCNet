@@ -1,0 +1,24 @@
+; ReUSTCNet 的原生扩展清单 —— 见 tools/native_window/native_window.c 顶部的长注释
+; （为什么必须绕过引擎、为什么手写 C 而不是 godot-cpp）。
+;
+; 目录约定：
+;   tools/native_window/native_window.c   源码（tools/ 不进导出版）
+;   bin/native_window.windows.x86_64.dll  产物，由 tools/build_native_window.sh 生成
+;
+; 三个 feature 标签都指同一个 dll：
+;   editor  = 在编辑器里按 F5（编辑器本体）
+;   debug   = 导出 debug 版（build.bat debug）
+;   release = 导出 release 版（build.bat）
+; 这个 dll 是纯 C、没有调试/发布之分，所以三处共用一个文件。
+
+[configuration]
+
+entry_symbol = "reustcnet_native_window_init"
+compatibility_minimum = "4.7"
+reloadable = false
+
+[libraries]
+
+windows.editor.x86_64 = "res://bin/native_window.windows.x86_64.dll"
+windows.debug.x86_64 = "res://bin/native_window.windows.x86_64.dll"
+windows.release.x86_64 = "res://bin/native_window.windows.x86_64.dll"

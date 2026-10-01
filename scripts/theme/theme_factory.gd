@@ -144,12 +144,22 @@ static func _styleboxes(t: Theme) -> void:
 	t.set_icon("close", "Window", _icon("close.svg"))
 	t.set_icon("close_pressed", "Window", _icon("close_pressed.svg"))
 
-	# 滚动条：轨道 + 滑块（ScrollBar 的 grabber 是 StyleBox，非图标）
-	t.set_stylebox("scroll", "ScrollBar", _sb(ThemePalette.SURFACE_ALT, _TRANSPARENT, ThemePalette.RADIUS_SM, 0))
-	t.set_stylebox("scroll_focus", "ScrollBar", _sb(ThemePalette.SURFACE_ALT, _TRANSPARENT, ThemePalette.RADIUS_SM, 0))
-	t.set_stylebox("grabber", "ScrollBar", _sb(ThemePalette.BORDER_STRONG, _TRANSPARENT, ThemePalette.RADIUS_SM, 0))
-	t.set_stylebox("grabber_highlight", "ScrollBar", _sb(ThemePalette.BORDER_STRONG.lightened(0.25), _TRANSPARENT, ThemePalette.RADIUS_SM, 0))
-	t.set_stylebox("grabber_pressed", "ScrollBar", _sb(ThemePalette.ACCENT, _TRANSPARENT, ThemePalette.RADIUS_SM, 0))
+	# 滚动条：轨道 + 滑块（ScrollBar 的 grabber 是 StyleBox，非图标）。
+	#
+	# **必须给 content_margin**：滚动条的粗细就是样式盒的最小尺寸（= 左右 margin 之和），
+	# 给 0 的话 `VScrollBar.get_combined_minimum_size()` 实测就是 `(0, 0)` —— 轨道与滑块
+	# 都画不出来，整个界面的滚动条都成了抓不住的细痕。见 ThemePalette.SCROLLBAR_W。
+	var sb_pad := ThemePalette.SCROLLBAR_W * 0.5
+	t.set_stylebox("scroll", "ScrollBar",
+			_sb(ThemePalette.SURFACE_ALT, _TRANSPARENT, ThemePalette.RADIUS_SM, 0, sb_pad, sb_pad))
+	t.set_stylebox("scroll_focus", "ScrollBar",
+			_sb(ThemePalette.SURFACE_ALT, _TRANSPARENT, ThemePalette.RADIUS_SM, 0, sb_pad, sb_pad))
+	t.set_stylebox("grabber", "ScrollBar",
+			_sb(ThemePalette.BORDER_STRONG, _TRANSPARENT, ThemePalette.RADIUS_SM, 0, sb_pad, sb_pad))
+	t.set_stylebox("grabber_highlight", "ScrollBar",
+			_sb(ThemePalette.BORDER_STRONG.lightened(0.25), _TRANSPARENT, ThemePalette.RADIUS_SM, 0, sb_pad, sb_pad))
+	t.set_stylebox("grabber_pressed", "ScrollBar",
+			_sb(ThemePalette.ACCENT, _TRANSPARENT, ThemePalette.RADIUS_SM, 0, sb_pad, sb_pad))
 
 	# 工具提示
 	t.set_stylebox("panel", "TooltipPanel", _sb(ThemePalette.SURFACE, ThemePalette.BORDER_STRONG,
@@ -179,6 +189,13 @@ static func _icons(t: Theme) -> void:
 
 	t.set_icon("up", "SpinBox", _icon("arrow_up.svg"))
 	t.set_icon("down", "SpinBox", arrow_down)
+
+	# 滚动条两端的箭头按钮：**自定义主题里没定义的项会回落到引擎默认主题**，而默认主题的
+	# 滚动条两端是有箭头的，跟这套浅色样式不搭。压成全透明的 empty.svg
+	# （尺寸仍是 8×8，所以「点两端步进」这个交互还在，只是看不见）。
+	for dir in ["increment", "decrement"]:
+		for state in ["", "_highlight", "_pressed"]:
+			t.set_icon(dir + state, "ScrollBar", empty)
 
 	# 弹出菜单：仅当前选项用圆点标记，其余不显示任何标记
 	t.set_icon("checked", "PopupMenu", dot)
@@ -220,12 +237,21 @@ static func _custom_types(t: Theme) -> void:
 	t.set_color("progress_color", "CircularProgressBar", ThemePalette.ACCENT)
 	t.set_color("text_color", "CircularProgressBar", ThemePalette.TEXT)
 
-	# 日志面板（RichTextLabel 的变体）：等宽感的小字 + 卡片底色
-	t.set_type_variation("LogView", "RichTextLabel")
-	t.set_color("default_color", "LogView", ThemePalette.TEXT_SEC)
-	t.set_font_size("normal_font_size", "LogView", ThemePalette.FONT_SM)
-	t.set_stylebox("normal", "LogView", _sb(ThemePalette.SURFACE, ThemePalette.BORDER,
-			ThemePalette.RADIUS_SM, 1, ThemePalette.PAD_INPUT_H, ThemePalette.PAD_INPUT_V))
+	# 滚动日志（LogView 控件）：级别配色沿用状态色的语义令牌，不另起一套颜色。
+	# 面板外观（白底 + 边框）由 PanelContainer 的 panel 样式盒提供，这里只管文字色。
+	t.set_color("info_color", "LogView", ThemePalette.TEXT_SEC)
+	t.set_color("ok_color", "LogView", ThemePalette.SUCCESS)
+	t.set_color("warn_color", "LogView", ThemePalette.WARNING)
+	t.set_color("error_color", "LogView", ThemePalette.DANGER)
+	t.set_color("system_color", "LogView", ThemePalette.ACCENT)
+	t.set_color("time_color", "LogView", ThemePalette.TEXT_DIS)
+	t.set_color("source_color", "LogView", ThemePalette.ACCENT)
+
+	# LogView 内部那个 RichTextLabel 用的变体：日志用比正文小一号的字，一行能多看几条。
+	t.set_type_variation("LogText", "RichTextLabel")
+	t.set_color("default_color", "LogText", ThemePalette.TEXT_SEC)
+	t.set_font_size("normal_font_size", "LogText", ThemePalette.FONT_SM)
+	t.set_font_size("bold_font_size", "LogText", ThemePalette.FONT_SM)
 
 	# 状态点（自绘圆点）：颜色**不自带**，由控件读自己 theme_type_variation 对应的
 	# StatusOk/StatusWarn/StatusError/StatusIdle 的 font_color —— 这样状态色仍然只有

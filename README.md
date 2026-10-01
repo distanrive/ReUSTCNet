@@ -17,13 +17,20 @@
 - 自动登录并选择出口（教育网、电信、联通、移动等 9 个出口）
 - 网络断开后自动重连，支持快速重试与常规检测双模式
 - 实时显示连接状态、目标出口、本机 IP、连续运行时长、最后检测结果
-- 系统托盘图标：关闭窗口时隐藏到后台，托盘菜单可显示主界面 / 启停监控 / 退出
+- 系统托盘图标：关闭窗口时**从任务栏上收起来**（不是最小化），托盘菜单可显示主界面 / 启停监控 / 退出
 - 断网时自动关闭 Windows 系统代理（可选开关）
 - 密码用 AES-256 加密存储，密钥绑定当前 Windows 用户（见下方「密码安全」）
-- 一键清除已保存的密码或删除开机自启注册表项
+- 一键清除已保存的密码、或关掉开机自启
 - 定时执行指令：到达设定时间后弹出确认倒计时，倒计时结束执行程序目录下的 `command.bat`
 - 单实例运行；重复启动会把已有窗口叫到前台
 - 界面缩放手动档位（跟随系统 / 100%～200%），记在配置里
+- 运行日志可回看、可选中复制，自动跟随最新一行；另有按天轮转的日志文件
+
+> **开机自启用的是「启动」文件夹里的快捷方式**，不是注册表
+> （`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\ReUSTCNet.lnk`）。
+> 往 `HKCU\...\Run` 写值会被杀软当成木马行为拦下来，所以没走那条路。
+> **开关默认是关的**，程序不会自己打开它；从 1.x 升上来的话，旧的那条注册表项会在
+> 第一次启动时被静默清掉，要自启请自己在「启动与外观」里勾一次。
 
 ## 使用方式
 
@@ -46,14 +53,22 @@ godot --path . -- --ui-scale=1.5         # 临时指定界面缩放
 
 ### 自检
 
-平台相关的部分（编码解码、表单编码、密码加解密、注册表读写）有一份自检，改动这几处之后跑一下：
+平台相关的部分（编码解码、表单编码、密码加解密、注册表读写、自启快捷方式）、
+两个「错了也不报错」的界面控件（滚动条宽度、日志控件的裁剪与转义），
+以及那个原生窗口扩展（能不能加载、隐藏是不是真的生效）有一份自检，
+改动这几处之后跑一下：
 
 ```bash
 godot --headless --path . --script res://tools/self_check.gd
+
+# 原生扩展那一项要在**窗口模式**下才会真跑（headless 下没有窗口系统，会跳过）：
+godot --path . --script res://tools/self_check.gd
 ```
 
 它只碰本程序自己的注册表键（`HKCU\Software\ReUSTCNet*`），跑完清理干净，
-**不会动你的系统代理、系统自启项或任何其他设置**。退出码 0 = 全通过。
+**不会动你的系统代理或任何其他设置**。开机自启那一项会建一个快捷方式再立刻删掉、
+并把原来的状态还原（在编辑器里跑时整项跳过）；原生扩展那一项用的是**临时窗口**，
+不会碰你的主窗口。退出码 0 = 全通过。
 
 > 这是**开发期工具**，需要 Godot 本体才能运行；导出的 exe 里不带它
 > （发布版模板不会执行 `--script` 指定的脚本，带上也是死重量）。
@@ -155,6 +170,7 @@ godot --headless --path . --script res://tools/self_check.gd
 ```
 .
 ├── project.godot                 # 工程配置 + autoload（无后端，纯 GDScript）
+├── native_window.gdextension     # 原生窗口扩展的清单（Godot 靠扫这个文件发现它）
 ├── scenes/app.tscn               # 主场景
 ├── scripts/
 │   ├── app.gd                    # 主界面：建界面 / 绑定配置 / 接核心逻辑的信号
@@ -166,19 +182,23 @@ godot --headless --path . --script res://tools/self_check.gd
 │   ├── theme/
 │   │   ├── theme_palette.gd      # 设计令牌（颜色/圆角/字号/间距，唯一可调来源）
 │   │   └── theme_factory.gd      # 由令牌构建完整 Theme
-│   ├── ui/                       # 可复用控件（StatusDot / Switch / TitledGroup / …）
+│   ├── ui/                       # 可复用控件（StatusDot / Switch / TitledGroup / LogView / …）
 │   └── core/                     # 纯逻辑，不引用任何 UI
 │       ├── wlt_client.gd         # 取 IP / 登录 / 开通出口 / 检测 + 响应解码
 │       ├── net_monitor.gd        # 监控状态机（协程）
 │       ├── app_paths.gd          # 可写目录探测、日志目录、command.bat 查找
 │       ├── secret_store.gd       # 密码加解密
 │       ├── win_registry.gd       # 注册表读写（reg.exe）
-│       ├── win_system.gd         # 开机自启项、系统代理开关
-│       ├── win_shell.gd          # 起进程
+│       ├── win_system.gd         # 开机自启（启动文件夹快捷方式）、系统代理开关
+│       ├── win_shell.gd          # 起进程（含 PowerShell）
 │       ├── command_scheduler.gd  # 定时执行指令
 │       └── log_store.gd          # 日志落盘 + 轮转 + 清理
-├── themes/icons/                 # 控件图标（SVG）
-├── tools/self_check.gd           # 平台相关部分的自检
+├── themes/icons/                 # 控件图标
+├── bin/                          # 原生扩展的产物（*.dll，构建时生成）
+├── tools/
+│   ├── self_check.gd             # 平台相关部分的自检
+│   ├── build_native_window.sh    # 编译原生窗口扩展
+│   └── native_window/            # 那个扩展的 C 源码（为什么需要它，见源码顶部注释）
 ├── docs/code-review.md           # 旧版 main.py 的审阅记录
 ├── oldversion/                   # 旧版 Python 实现（本地存档，见下）
 └── README.assets/                # 截图
@@ -200,16 +220,23 @@ build.bat test         :: 只导出 + 冒烟测试
 build.bat templates    :: 列出已安装的导出模板（排查模板缺失）
 ```
 
-配置在 `build_config.bat` 里（Godot 路径、预设名、是否压包），换机器只改这一个文件。
+配置在 `build_config.bat` 里（Godot 路径、预设名、是否压包、是否编原生扩展），换机器只改这一个文件。
+导出流程是 5 步：查模板 → **编译原生窗口扩展** → 刷导入缓存 → 导出 → 冒烟测试。
 
-**产物是两个文件，必须一起分发**：
+**产物是三个文件，必须一起分发**：
 
-| 文件 | 说明 |
-| --- | --- |
-| `dist\ReUSTCNet.exe` | 引擎本体，约 34 MB（用的是自编译的精简模板，见下） |
-| `dist\ReUSTCNet.pck` | 本项目的全部数据，约 126 KB |
+| 文件 | 说明 | 缺了会怎样 |
+| --- | --- | --- |
+| `dist\ReUSTCNet.exe` | 引擎本体，约 34 MB（用的是自编译的精简模板，见下） | —— |
+| `dist\ReUSTCNet.pck` | 本项目的全部数据，约 260 KB | **起不来** |
+| `dist\native_window.windows.x86_64.dll` | 约 58 KB，让「关窗后从任务栏消失」成为可能 | 能起来，但关窗只会最小化（启动日志里有警告） |
 
 `command.bat` 放在 exe 同级目录。目标机器**不需要装 Python、不需要任何运行时**。
+
+那个 `.dll` 是本项目唯一一段非 GDScript 的代码，由 `tools/build_native_window.sh`
+用 MinGW 的 gcc 编出来（要装一次 MinGW，见 CLAUDE.md；`build.bat` 会自动调它，
+找不到 bash/gcc 时会警告并沿用已有的 dll）。它存在的原因写在
+`tools/native_window/native_window.c` 顶部：**Godot 从设计上禁止隐藏主窗口**。
 
 ### 首次打包前要装导出模板
 
@@ -226,22 +253,28 @@ build.bat templates    :: 列出已安装的导出模板（排查模板缺失）
 
 ### 关于体积
 
-exe 里那 100 MB 全是 Godot 引擎本身（本项目的全部数据只有 126 KB），
+exe 里那 100 MB 全是 Godot 引擎本身（本项目的全部数据只有 190 KB），
 所以调资源、调导入设置都没用 —— 唯一的办法是**自己编译一个精简版引擎模板**。
 
-本项目就是这么做的，官方模板 104 MB 压到了 **34 MB**：
+本项目就是这么做的，官方模板 104 MB 压到了 **29.4 MB**：
 
-| | 官方模板 | 本项目用的精简模板 | 旧版 Python 发布包 |
+| | 官方模板 | 精简模板 | 精简 + 类级裁剪（本项目） |
 | --- | --- | --- | --- |
-| exe | 104.1 MB | **33.9 MB** | ~17 MB |
-| rar 发布包 | 27.8 MB | **8.9 MB** | 18.9 MB |
+| exe | 104.1 MB | 32.8 MB | **29.4 MB** |
+| rar 发布包 | 27.8 MB | 8.6 MB | **7.5 MB** |
 
-砍掉的都是本项目用不到的：3D 引擎、音频、导航、XR、物理、纹理压缩编解码、各种图片格式、
-多人联机等模块。**保留**了 SVG（图标）、高级文本服务器（中文排版）、glslang（着色器）、
-freetype、以及 OpenGL 兼容渲染路径（Vulkan 不可用时的兜底）。
+分两级砍：
 
-重新编译的完整步骤和**踩过的坑**见 `CLAUDE.md` 的「打包 → 体积」一节，
-脚本是 `tools/build_template.sh`，模板路径填在 `build_config.bat` 的 `CUSTOM_TEMPLATE`。
+1. **关模块与引擎特性**（3D、音频、导航、XR、物理、纹理压缩编解码、各种图片格式、
+   多人联机、SDL 手柄输入、废弃 API 兼容层……）。**保留** SVG（图标）、WebP（纹理导入内部用它）、
+   高级文本服务器（中文排版）、glslang（着色器）、freetype、Vulkan + OpenGL 双渲染路径。
+2. **类级裁剪** —— 用编辑器里「项目 → 工具 → Engine Compilation Configuration Editor →
+   Detect from Project」生成一份 `.gdbuild`（本项目在 `tools/reustcnet.gdbuild`），
+   把用不到的引擎类整个编掉。这一步能再省 7.8%。
+
+重新编译的完整步骤、**每一次重新 Detect 之后必须核对的四条**、以及踩过的坑，
+见 `CLAUDE.md` 的「打包 → 体积」一节。脚本是 `tools/build_template.sh`，
+模板路径填在 `build_config.bat` 的 `CUSTOM_TEMPLATE`。
 不想折腾也能用官方模板：把 `CUSTOM_TEMPLATE` 清空即可，`build.bat` 会照常工作（exe 变回 104 MB）。
 
 ## 关于适配其他学校

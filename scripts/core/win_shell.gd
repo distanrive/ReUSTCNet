@@ -41,3 +41,43 @@ static func run_cmd_in_dir(command: String, working_dir: String) -> int:
 	var native := working_dir.replace("/", "\\").rstrip("\\")
 	var script := "cd /d \"%s\" && %s" % [native, command]
 	return run_detached("cmd.exe", PackedStringArray(["/c", script]))
+
+
+## 跑一段 PowerShell 命令并等它结束。目前只有「创建启动文件夹里的快捷方式」用它
+## （`WScript.Shell` 的 COM 接口是纯 GDScript 够不到的系统能力）。
+##
+## **`script` 里只能用单引号包字符串，绝对不能出现双引号**：Godot 给每个参数加引号时
+## 不转义里面的 `"`，双引号会把参数从中间劈开，PowerShell 收到的就是一段残缺的脚本。
+## 路径里的单引号要自己按 PowerShell 的规矩写成两个（`ps_quote()` 干这件事）。
+##
+## 刻意用 `-Command` 而不是「写个临时 .ps1 再 `-File`」：后者要额外带
+## `-ExecutionPolicy Bypass`，还得往磁盘上丢一个脚本文件 —— 这两样都是杀软启发式里的
+## 高频特征，而这次改开机自启的理由正是「别再踩杀软」。
+## `-Command` 不受执行策略限制，也不落任何文件。
+static func run_powershell(script: String) -> Dictionary:
+	var exe := powershell_exe()
+	if exe.is_empty():
+		return {"ok": false, "code": -1, "out": "找不到 powershell.exe（SystemRoot 环境变量缺失？）"}
+	return run(exe, PackedStringArray(["-NoProfile", "-NonInteractive", "-Command", script]))
+
+
+## PowerShell 里包一个字符串字面量（单引号，内部单引号翻倍转义）。
+static func ps_quote(text: String) -> String:
+	return "'" + text.replace("'", "''") + "'"
+
+
+## powershell.exe 的**绝对路径**。
+##
+## 不走 PATH：Windows 上 PATH 是用户可写的，先命中的同名程序会被执行 ——
+## 这里要起的偏偏是一个能改用户启动项的程序，不能有这么一层不确定性。
+static func powershell_exe() -> String:
+	var root := OS.get_environment("SystemRoot")
+	if root.is_empty():
+		root = OS.get_environment("windir")
+	if not root.is_empty():
+		var path := root.replace("/", "\\").rstrip("\\") \
+				+ "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+		if FileAccess.file_exists(path):
+			return path
+	# 环境变量被清过、或系统装在非常规位置时才回退到 PATH 查找
+	return "powershell.exe"

@@ -2,15 +2,17 @@ class_name WinRegistry
 extends RefCounted
 ## 注册表读写（走 `reg.exe`）。
 ##
-## 用途只有两处：开机自启项，以及密码密钥（见 SecretStore）。
+## 用途：密码密钥（见 SecretStore）、系统代理开关，以及**清理旧版遗留的自启项**。
 ## GDScript 没有 Win32 API，所以只能靠 `reg.exe`；命令参数全部经 PackedStringArray
 ## 传递、由 Godot 负责加引号，因此带空格的键名（`...\Internet Settings`）也是安全的。
 
+## 旧版把开机自启写在这里。**现在只用它做搬迁**：见 `WinSystem.migrate_legacy_autostart()`。
+## 写这个键是杀软的高频特征，新版改成在启动文件夹里建快捷方式了。
 const RUN_KEY := "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 const APP_KEY := "HKCU\\Software\\ReUSTCNet"
 
-## 开机自启项的值名。**沿用旧版 Python 实现的名字**，这样已经装过旧版的用户升级后
-## 自启项仍然对得上，不会被重复添加一条。
+## 自启项的名字。**沿用旧版 Python 实现的值名 / 文件名**，这样已经装过旧版的用户
+## 升级后两边的叫法仍然对得上（搬迁时不会建出第二条，或者漏删旧的）。
 const AUTOSTART_VALUE := "ReUSTCNet"
 
 

@@ -5,7 +5,10 @@ extends SceneTree
 ##   表单编码    中文参数有没有按 GB2312 出去、有没有多带结尾空字节
 ##   密码往返    SecretStore 加密→解密能不能还原（含中文密码）
 ##   注册表往返  带空格的键名 / 带空格与非 ASCII 的值能不能正确读回
-##   自启项      WinSystem 的读写与「路径是否指向当前程序」判断
+##   自启项      WinSystem 建的启动快捷方式能不能用、是否指向当前程序
+##   滚动条      宽度是不是还大于 0（为 0 = 整个界面的滚动条都看不见、抓不住）
+##   日志控件    LogView 的行数上限裁剪与 BBCode 转义
+##   原生窗口    那个 GDExtension 能不能加载、「隐藏」是不是真的生效
 ##
 ## 用法：
 ##   godot --headless --path <项目> --script res://tools/self_check.gd
@@ -27,6 +30,9 @@ func _initialize() -> void:
 	failed += _check_secret_round_trip()
 	failed += _check_registry_round_trip()
 	failed += _check_autostart_helpers()
+	failed += await _check_scrollbars()
+	failed += _check_log_view()
+	failed += await _check_native_window()
 	print("\n==== 自检结束：%s ====" % ("全部通过" if failed == 0 else "有 %d 项失败" % failed))
 	quit(1 if failed > 0 else 0)
 
@@ -144,23 +150,149 @@ func _check_registry_round_trip() -> int:
 	return failed
 
 
-## 自启项的读写。**写完立刻还原现场**，不给用户留垃圾。
+## 自启快捷方式的读写。**写完立刻还原现场**，不给用户留垃圾。
+##
+## 这一项验的是「PowerShell 那条命令真的能建出 .lnk，并且指向当前 exe」——
+## 拼错一个引号、或者 WScript.Shell 的 ComObject 没建成，界面上的开关就会
+## 显示成开着、实际什么都没发生（`enable_autostart()` 认的是文件，不是退出码）。
 func _check_autostart_helpers() -> int:
 	if not WinSystem.autostart_supported():
 		return _report("开机自启（编辑器里运行，跳过）", true, "导出成 exe 后才可用")
 
-	var existed_before := WinSystem.autostart_entry_exists()
-	var previous := WinSystem.autostart_value()
+	var path := WinSystem.autostart_shortcut_path()
+	var existed_before := FileAccess.file_exists(path)
 
-	var failed := _report("开机自启写入", WinSystem.enable_autostart())
+	var failed := _report("开机自启创建快捷方式", WinSystem.enable_autostart(),
+			"位置 %s" % path)
 	failed += _report("开机自启存在性判断", WinSystem.autostart_entry_exists())
 	failed += _report("开机自启指向当前程序", not WinSystem.autostart_needs_update(),
-			"写入的是 %s" % WinSystem.autostart_value())
+			"快捷方式指向 %s" % WinSystem.autostart_target())
+	failed += _report("开机自启关闭后不再存在",
+			WinSystem.disable_autostart() and not WinSystem.autostart_entry_exists())
 
-	if existed_before and not previous.is_empty():
-		WinRegistry.write_string(WinRegistry.RUN_KEY, WinRegistry.AUTOSTART_VALUE, previous)
-	else:
-		WinSystem.disable_autostart()
+	if existed_before:
+		WinSystem.enable_autostart()     # 本来就开着：还原回去
+	return failed
+
+
+# ---------------------------------------------------------------- 界面控件
+
+## 滚动条**必须**有实际宽度。
+##
+## 这一条钉的是本项目真实踩过的坑：`ThemeFactory._sb()` 的 content_margin 默认是 0，
+## 而滚动条的粗细**完全由样式盒的最小尺寸决定** —— 于是整个界面的滚动条都成了
+## 贴着右缘的 0 宽细痕（`VScrollBar.get_combined_minimum_size() == (0, 0)`），
+## 看不见、抓不住，而且**不报任何错**。改主题时最容易顺手改回去，所以钉在断言里。
+func _check_scrollbars() -> int:
+	# `--script` 跑的是自己的 SceneTree，autoload 那套不在，主题得显式建一次
+	root.theme = ThemeFactory.build()
+
+	var bar := VScrollBar.new()
+	root.add_child(bar)
+	await process_frame
+	var w := bar.get_combined_minimum_size().x
+	var failed := _report("竖滚动条有实际宽度",
+			w >= ThemePalette.SCROLLBAR_W - 0.01,
+			"最小宽度 %.1fpx（0 就是「滚动条消失」那个缺陷）" % w)
+
+	var hbar := HScrollBar.new()
+	root.add_child(hbar)
+	await process_frame
+	var h := hbar.get_combined_minimum_size().y
+	failed += _report("横滚动条同理（两个方向共用一条令牌）",
+			h >= ThemePalette.SCROLLBAR_W - 0.01, "最小高度 %.1fpx" % h)
+	bar.free()
+	hbar.free()
+	return failed
+
+
+## 日志控件的裁剪与转义。
+##
+## 两条都是「错了也不报错、只让日志悄悄不对」的类型：`max_lines` 比 TRIM_CHUNK 小时
+## 裁剪算出的保留行数是负数，会把整屏日志一次清空；BBCode 转义漏了的话，
+## 消息里的方括号（路径里很常见）会被当成标记，那一行显示就花了。
+func _check_log_view() -> int:
+	var log_view := LogView.new()
+	root.add_child(log_view)
+	log_view.append("第一条")
+	log_view.append("第二条", "warn")
+	log_view.append("路径 [D:/logs/run[3]] 不该被当成 BBCode")
+	var failed := _report("日志追加行数", log_view.line_count() == 3,
+			"line_count() = %d" % log_view.line_count())
+	failed += _report("日志转义方括号",
+			log_view.get_lines()[2] == "路径 [D:/logs/run[3]] 不该被当成 BBCode",
+			"读回 %s" % log_view.get_lines()[2])
+	log_view.clear()
+	failed += _report("清空日志", log_view.line_count() == 0)
+
+	# max_lines < TRIM_CHUNK 的边界：曾经会把日志一次清空
+	log_view.max_lines = 100
+	for i in 500:
+		log_view.append("批量 %d" % i)
+	var n := log_view.line_count()
+	failed += _report("超过行数上限后裁到上限内、且不会一次清空",
+			n > 0 and n <= 100 and log_view.get_lines()[n - 1] == "批量 499",
+			"500 条之后还剩 %d 行" % n)
+	log_view.free()
+	return failed
+
+
+## 原生窗口扩展（`bin/native_window.windows.x86_64.dll`）。
+##
+## 它干的那件事在 Godot 里没有替代品：把主窗口从任务栏上藏起来
+## （为什么必须绕过引擎，见 `tools/native_window/native_window.c` 顶部的长注释）。
+##
+## 这里验三件事：类在不在、四个方法在不在、以及**隐藏/显示真的生效**。
+## 用一个临时窗口验，不动主窗口 —— 免得跑个自检把用户的窗口弄没了。
+## headless 下没有窗口系统，整项跳过。
+func _check_native_window() -> int:
+	if not ClassDB.class_exists(&"NativeWindow"):
+		return _report("原生窗口扩展（NativeWindow 类已注册）", false,
+				"没注册。是不是忘了编？bash tools/build_native_window.sh，再 --import 一次")
+
+	var names := PackedStringArray()
+	for m in ClassDB.class_get_method_list(&"NativeWindow", true):
+		names.append(str(m["name"]))
+	var missing := PackedStringArray()
+	for want in ["hide_window", "show_window", "is_supported", "is_window_visible"]:
+		if not names.has(want):
+			missing.append(want)
+	var failed := _report("原生窗口扩展的方法齐全", missing.is_empty(),
+			"缺 %s" % str(missing) if not missing.is_empty() else str(names))
+	if failed > 0:
+		return failed
+
+	if DisplayServer.get_name() == "headless":
+		return _report("原生窗口扩展的隐藏/显示（headless 下没有窗口系统，跳过）", true)
+
+	var probe := Window.new()
+	probe.title = "ReUSTCNet self_check"
+	probe.size = Vector2i(240, 160)
+	root.add_child(probe)
+	await process_frame
+	await process_frame
+
+	var hwnd := DisplayServer.window_get_native_handle(
+			DisplayServer.WINDOW_HANDLE, probe.get_window_id())
+	if hwnd == 0:
+		probe.queue_free()
+		return _report("取得到窗口句柄", false, "window_get_native_handle 返回 0")
+
+	var was_visible := bool(ClassDB.class_call_static(&"NativeWindow", &"is_window_visible", hwnd))
+	ClassDB.class_call_static(&"NativeWindow", &"hide_window", hwnd)
+	await process_frame
+	var now_visible := bool(ClassDB.class_call_static(&"NativeWindow", &"is_window_visible", hwnd))
+	ClassDB.class_call_static(&"NativeWindow", &"show_window", hwnd)
+	await process_frame
+	var back_visible := bool(ClassDB.class_call_static(&"NativeWindow", &"is_window_visible", hwnd))
+
+	failed += _report("hide_window 真的把窗口藏起来了（IsWindowVisible 变假）",
+			was_visible and not now_visible,
+			"调用前 %s，调用后 %s" % [was_visible, now_visible])
+	failed += _report("show_window 能把它叫回来", back_visible, "恢复后 %s" % back_visible)
+
+	probe.queue_free()
+	await process_frame
 	return failed
 
 

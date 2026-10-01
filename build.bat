@@ -110,7 +110,40 @@ if defined MISSING (
     pause
     exit /b 1
 )
-echo [1/4] Export templates OK
+echo [1/5] Export templates OK
+
+:: ---------- Build the native extension ----------
+:: bin\native_window.windows.x86_64.dll -- the GDExtension that hides the main
+:: window from the taskbar (Godot itself forbids hiding it). See
+:: tools/native_window/native_window.c for the whole story.
+:: bash is used because the build script is the same one the docs tell you to run
+:: by hand; if bash is unavailable we keep whatever dll is already there.
+:: BUILD_NATIVE=0 in build_config.bat turns this step off (the dll is only needed
+:: for "hide the window to the tray"; without it the app minimizes instead).
+if /i "%BUILD_NATIVE%"=="0" goto :native_done
+echo [2/5] Building the native extension...
+where bash >nul 2>&1
+if errorlevel 1 goto :native_nobash
+bash tools/build_native_window.sh
+if errorlevel 1 goto :native_failed
+goto :native_check
+
+:native_nobash
+echo       [WARN] bash not found -- skipping the native extension build.
+echo              Using whatever bin\native_window.windows.x86_64.dll already exists.
+goto :native_check
+
+:native_failed
+echo [ERROR] Building the native extension failed. See the output above.
+echo         Fix it, or set BUILD_NATIVE=0 in build_config.bat to skip it.
+pause
+exit /b 1
+
+:native_check
+if exist "bin\native_window.windows.x86_64.dll" goto :native_done
+echo       [WARN] bin\native_window.windows.x86_64.dll is missing.
+echo              The app still runs, but closing the window will only minimize it.
+:native_done
 
 :: ---------- Install the custom (slim) template, if configured ----------
 :: Godot only ever reads from the templates folder, so a self-compiled template has
@@ -144,7 +177,7 @@ exit /b 1
 :custom_template_done
 
 :: ---------- Refresh imports and the class_name cache ----------
-echo [2/4] Importing assets ^(refreshing the class_name cache^)...
+echo [3/5] Importing assets ^(refreshing the class_name cache^)...
 "%GODOT_EXE%" --headless --path . --import >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Asset import failed. Run it alone to see the error:
@@ -155,7 +188,7 @@ if errorlevel 1 (
 
 :: ---------- Export ----------
 if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
-echo [3/4] Exporting ^(slow on the first run^)...
+echo [4/5] Exporting ^(slow on the first run^)...
 "%GODOT_EXE%" --headless --path . %EXPORT_FLAG% "%PRESET%" "%OUT_EXE%"
 if errorlevel 1 (
     echo.
@@ -172,9 +205,10 @@ if not exist "%OUT_EXE%" (
     exit /b 1
 )
 
-echo [4/4] Output:
+echo [5/5] Output:
 call :show_size "%OUT_EXE%"
 call :show_size "%OUT_DIR%\%EXE_NAME%.pck"
+call :show_size "%OUT_DIR%\native_window.windows.x86_64.dll"
 call :show_size "%OUT_DIR%\%EXE_NAME%-debug.console.exe"
 
 :: ---------- Smoke test / run ----------
@@ -211,7 +245,7 @@ if not exist "%RAR_EXE%" (
 for /f "usebackq delims=" %%d in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmm"`) do set "STAMP=%%d"
 set "ARCHIVE=%OUT_DIR%\%EXE_NAME%-%STAMP%.rar"
 echo       Packing %ARCHIVE% ...
-"%RAR_EXE%" a -ep1 -m5 "%ARCHIVE%" "%OUT_EXE%" "%OUT_DIR%\%EXE_NAME%.pck" >nul
+"%RAR_EXE%" a -ep1 -m5 "%ARCHIVE%" "%OUT_EXE%" "%OUT_DIR%\%EXE_NAME%.pck" "%OUT_DIR%\native_window.windows.x86_64.dll" >nul
 call :show_size "%ARCHIVE%"
 goto :done
 
@@ -219,14 +253,15 @@ goto :done
 for /f "usebackq delims=" %%d in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmm"`) do set "STAMP=%%d"
 set "ARCHIVE=%OUT_DIR%\%EXE_NAME%-%STAMP%.zip"
 echo       Packing %ARCHIVE% ...
-powershell -NoProfile -Command "Compress-Archive -Force -LiteralPath '%OUT_EXE%','%OUT_DIR%\%EXE_NAME%.pck' -DestinationPath '%ARCHIVE%'"
+powershell -NoProfile -Command "Compress-Archive -Force -LiteralPath '%OUT_EXE%','%OUT_DIR%\%EXE_NAME%.pck','%OUT_DIR%\native_window.windows.x86_64.dll' -DestinationPath '%ARCHIVE%'"
 call :show_size "%ARCHIVE%"
 
 :done
 echo.
 echo ============================================================
 echo   Done. Output in %OUT_DIR%\
-echo   Ship %EXE_NAME%.exe and %EXE_NAME%.pck together.
+echo   Ship all three together: %EXE_NAME%.exe, %EXE_NAME%.pck,
+echo   and native_window.windows.x86_64.dll.
 echo ============================================================
 pause
 exit /b 0

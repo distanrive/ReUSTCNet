@@ -62,6 +62,14 @@ func _ready() -> void:
 	# 有这行就能立刻区分是系统 DPI、配置文件还是命令行参数导致的。
 	print("[AppShell] 界面缩放 %.2f×（来源：%s），窗口 %d×%d，配置文件 %s" % [
 		_effective_scale(), source, win.size.x, win.size.y, config_path])
+	# 把两个原始读数也打出来：「界面怎么比别人的小/大」这类问题，答案全在这三个数里。
+	# `screen_get_scale()` 在 Windows 上恒定 1.0（文档：只在 Android/iOS/Web/macOS/
+	# Linux-Wayland 上实现），所以实际生效的是 `screen_get_dpi() / 96`；
+	# 而 dpi 读出来是多少，取决于**进程有没有向 Windows 声明自己是 DPI-aware** ——
+	# 不声明的话系统一律按 96 报，界面就整整小一圈（编辑器与导出版可能不一样）。
+	print("[AppShell] screen_get_scale=%.2f  screen_get_dpi=%d  screen_get_size=%s" % [
+		DisplayServer.screen_get_scale(), DisplayServer.screen_get_dpi(),
+		DisplayServer.screen_get_size()])
 
 
 func _process(delta: float) -> void:

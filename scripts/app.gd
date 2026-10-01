@@ -12,8 +12,6 @@ const APP_TITLE := "ReUSTCNet 有线网登录重连器"
 
 enum LogLevel { INFO, OK, WARN, ERROR }
 
-const _LOG_MAX_PARAGRAPHS := 2000
-
 # 托盘菜单项的 id（分隔线也占 id，这样用 get_item_index 反查下标，不怕以后挪动顺序）
 const _TRAY_SHOW := 0
 const _TRAY_START := 1
@@ -57,7 +55,7 @@ var _auto_monitor_switch: Switch
 var _tray_switch: Switch
 var _scale_option: UiScaleOption
 
-var _log_view: RichTextLabel
+var _log_view: LogView
 
 var _tray_available := false
 var _tray: StatusIndicator
@@ -92,8 +90,13 @@ func _ready() -> void:
 	_build_ui()
 	_install_tray()
 	_make_timers()
+	_cleanup_legacy_autostart_once()   # 必须排在 _load_into_ui() 之前：开关要读到清理后的状态
 	_load_into_ui()          # 必须在 _connect_signals() 之前：设置控件的初值会触发 value_changed
 	_connect_signals()
+	# **必须真把它跑起来**：`configure()` 只是把参数收进去，轮询协程要 `start()` 才起。
+	# 之前这里漏了这一行，于是「定时执行指令」永远不触发（配置、触发后记账、界面全都对，
+	# 就是没人轮询）—— 一个只有真去等一分钟才发现得了的静默失效。
+	_scheduler.start(self)
 
 	_log_startup_info()
 	AppShell.set_window_title(APP_TITLE)
@@ -115,13 +118,64 @@ func _build_ui() -> void:
 
 	page.add_child(_build_header())
 
-	var body := HBoxContainer.new()
-	body.add_theme_constant_override("separation", 12)
-	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	page.add_child(body)
+	# **页面级滚动**：窗口比内容小时整体滚动，而不是把右下角直接切掉。
+	# 拉伸模式是 `disabled`（见 project.godot 的说明），所以「窗口变小 = 显示更少内容」，
+	# 兜底就靠这一层。两行**一起滚**是刻意的 —— 见下面 GridContainer 的说明。
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# 横向留 AUTO：这套布局的固有最小宽度有一千多像素（「网络」那张卡里有一串
+	# 「1 教育网出口（国际，仅用教育网访问，适合看文献）」，`Label`/`OptionButton`
+	# 的最小宽度就是整串文字的宽度），屏幕小或缩放大的机器上出个横向滚动条兜底，
+	# 总比把右边裁掉强。默认窗口尺寸已经按「装得下全部内容」算过了，正常看不到它。
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	page.add_child(scroll)
 
-	body.add_child(_build_sidebar())
-	body.add_child(_build_main_area())
+	# 整体是「2 列 × 2 行」的网格，布局是：
+	#
+	#     账户      | 网络      | 运行状态
+	#     定时执行指令 |          运行日志
+	#     启动与外观  |          运行日志（续）
+	#
+	# 视觉上的三列里，右边那一列其实是**网格第 1 行右格里的一个 HBox** 再横排两张卡。
+	# 为什么不直接用一个 3 列的网格：那样「定时执行指令 / 启动与外观」只能塞进某一列，
+	# 而下面的「运行日志」需要横跨两列 —— GridContainer 不支持跨格。
+	# 这样套一层的好处是**左下/下方那条竖向分界线仍然与「账户」的右边界严格对齐**；
+	# 靠 `size_flags_stretch_ratio` 是做不到的，Godot 的 GridContainer 把富余宽度在
+	# 可扩展的列之间**平均**分，压根不看 ratio（`grid_container.cpp` 里是
+	# `remaining_space.width / col_expanded.size()`）。
+	var body := GridContainer.new()
+	body.columns = 2
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# 页面上其它间距都是 12（`page` / 各列内部），网格这里也统一成 12，
+	# 否则各分块之间会夹着一圈 8px 的缝（GridContainer 的主题默认值）。
+	body.add_theme_constant_override("h_separation", 12)
+	body.add_theme_constant_override("v_separation", 12)
+	scroll.add_child(body)
+
+	# 第 1 行左：账户
+	body.add_child(_build_account_card())
+
+	# 第 1 行右：网络 ｜ 运行状态（横排）
+	var top_right := HBoxContainer.new()
+	top_right.add_theme_constant_override("separation", 12)
+	top_right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top_right.add_child(_build_network_card())
+	top_right.add_child(_build_status_card())
+	body.add_child(top_right)
+
+	# 第 2 行左：定时执行指令 / 启动与外观（竖排）
+	var bottom_left := VBoxContainer.new()
+	bottom_left.add_theme_constant_override("separation", 12)
+	bottom_left.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# 与同一列上方的「账户」同宽（网格第 0 列的宽度取两者中较大的那个）
+	bottom_left.custom_minimum_size.x = ThemePalette.CARD_MIN_W
+	bottom_left.add_child(_build_command_card())
+	bottom_left.add_child(_build_startup_card())
+	body.add_child(bottom_left)
+
+	# 第 2 行右：运行日志
+	body.add_child(_build_log_card())
 
 
 func _build_header() -> Control:
@@ -154,32 +208,21 @@ func _build_header() -> Control:
 	header.add_child(_stop_btn)
 
 	_hide_btn = _button("隐藏到托盘", "GhostButton", _hide_to_tray)
+	_hide_btn.tooltip_text = "把窗口从任务栏上收起来；托盘图标仍常驻，点它可以调回来。"
 	_hide_btn.visible = _tray_available
 	header.add_child(_hide_btn)
 	return header
 
 
-func _build_sidebar() -> Control:
-	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(ThemePalette.SIDEBAR_W, 0)
-	# 必须关掉横向滚动，否则里面的卡片会按「内容想要的宽度」撑开、顶出窗口
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-
-	var side := VBoxContainer.new()
-	side.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	side.add_theme_constant_override("separation", 12)
-	scroll.add_child(side)
-
-	side.add_child(_build_account_card())
-	side.add_child(_build_network_card())
-	side.add_child(_build_command_card())
-	side.add_child(_build_startup_card())
-	return scroll
-
-
 func _build_account_card() -> Control:
 	var card := TitledGroup.new()
 	card.title = "账户"
+	# 横向**不设 EXPAND**：第 0 列（= 本卡片与下方的「定时执行指令 / 启动与外观」）
+	# 宽度就钉在 CARD_MIN_W 上，窗口变宽时多出来的宽度全给右边两列 —— 日志需要宽度，
+	# 而这条规则还顺手让三列在默认尺寸下基本等宽（见 CARD_MIN_W 的注释）。
+	# 纵向不设 —— 第 1 行的高度由「网络 / 运行状态」里较高的那个决定，
+	# 本卡片被那一行撑高，接缝才落在同一条横线上。
+	card.custom_minimum_size.x = ThemePalette.CARD_MIN_W
 
 	_username = LabeledLineEdit.new()
 	_username.label_text = "账号"
@@ -205,6 +248,8 @@ func _build_account_card() -> Control:
 func _build_network_card() -> Control:
 	var card := TitledGroup.new()
 	card.title = "网络"
+	# 与同一行的「运行状态」平分富余宽度（两个都要 EXPAND，否则只有一个会吃掉全部）
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
 	# 出口名很长（官方原文），单独占一行铺满卡片宽度，比挤在标签右边好读
 	_export_option = OptionButton.new()
@@ -262,6 +307,14 @@ func _build_command_card() -> Control:
 func _build_startup_card() -> Control:
 	var card := TitledGroup.new()
 	card.title = "启动与外观"
+	# **纵向 EXPAND：这一列的最后一张卡要把余下的高度吃掉。**
+	#
+	# 左列是个 VBox（定时执行指令 / 启动与外观），两张卡都只有自然高度；
+	# 而网格把这一格拉到与右边「运行日志」一样高，多出来的那截如果没人接手，
+	# 就会留在 VBox 底部 —— 也就是**卡片外面**，于是日志的底边比启动与外观低一截。
+	# 让最后一张卡长起来，它的下边界就与日志卡片对齐，余白改到卡片内部
+	# （和上面一行被撑高的「账户」卡片是同一种表现，观感一致）。
+	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
 	_auto_monitor_switch = Switch.new()
 	card.content.add_child(_switch_row("启动后自动监控", _auto_monitor_switch,
@@ -269,15 +322,16 @@ func _build_startup_card() -> Control:
 
 	_autostart_switch = Switch.new()
 	card.content.add_child(_switch_row("开机自启", _autostart_switch,
-			"在注册表 HKCU\\...\\Run 里加一项，登录 Windows 后自动运行本程序。"))
+			"在「启动」文件夹里放一个本程序的快捷方式，登录 Windows 后自动运行。\n"
+			+ "不用注册表：往 HKCU\\...\\Run 写值会被杀软当成木马行为拦下来。"))
 	# 开发期写进注册表的会是 Godot 编辑器本身，没有意义，直接禁掉（见 WinSystem 的说明）
 	if not WinSystem.autostart_supported():
 		_autostart_switch.disabled = true
 
-	var tray_label := "关窗时进托盘" if _tray_available else "关窗时最小化"
+	var tray_label := "关窗时隐藏到托盘" if _tray_available else "关窗时最小化"
 	_tray_switch = Switch.new()
 	card.content.add_child(_switch_row(tray_label, _tray_switch,
-			"开：点关闭按钮只是隐藏窗口，监控继续跑，退出要从托盘菜单走。\n"
+			"开：点关闭按钮只是把窗口藏起来，监控继续跑；要退出走托盘菜单的「退出」。\n"
 			+ "关：点关闭按钮直接退出程序（监控一起停）。"))
 	if not _tray_available:
 		_tray_switch.disabled = true
@@ -287,18 +341,15 @@ func _build_startup_card() -> Control:
 	return card
 
 
-func _build_main_area() -> Control:
-	var main := VBoxContainer.new()
-	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	main.add_theme_constant_override("separation", 12)
-	main.add_child(_build_status_card())
-	main.add_child(_build_log_card())
-	return main
-
-
 func _build_status_card() -> Control:
 	var card := TitledGroup.new()
 	card.title = "运行状态"
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# 内容本身用不了这么宽，定个下限是为了跟左邻的「网络」卡配平（见令牌注释）
+	card.custom_minimum_size.x = ThemePalette.CARD_MIN_W
+	# 与它同一行的「网络」卡片更高，这一格会被行高撑到同样的高度 —— 接缝才对得上。
+	# 纵向不设 EXPAND：内容自己贴顶排，下面留白（而不是把整行拉成内容高）。
+	card.size_flags_vertical = Control.SIZE_FILL
 
 	var grid := GridContainer.new()
 	grid.columns = 2
@@ -330,7 +381,11 @@ func _build_status_card() -> Control:
 func _build_log_card() -> Control:
 	var card := TitledGroup.new()
 	card.title = "运行日志"
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# 卡片会被拉得比内容高，内容容器必须跟着伸，日志框才填得满整张卡片 ——
+	# 否则日志框只占「最小高度」，下面留一大片白（原样就是这样）。
+	card.content.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
 	var toolbar := HBoxContainer.new()
 	toolbar.add_theme_constant_override("separation", 6)
@@ -343,11 +398,7 @@ func _build_log_card() -> Control:
 	toolbar.add_child(open_dir)
 	card.content.add_child(toolbar)
 
-	_log_view = RichTextLabel.new()
-	_log_view.theme_type_variation = "LogView"
-	_log_view.bbcode_enabled = true
-	_log_view.scroll_following = true
-	_log_view.selection_enabled = true
+	_log_view = LogView.new()
 	_log_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_log_view.custom_minimum_size = Vector2(0, ThemePalette.LOG_MIN_H)
 	card.content.add_child(_log_view)
@@ -452,7 +503,9 @@ func _install_tray() -> void:
 
 	_tray = StatusIndicator.new()
 	_tray.name = "Tray"
-	_tray.icon = load("res://themes/icons/app.svg")
+	# 托盘图标用**缩小过的** PNG，不是那张 256×256 的 icon.png：
+	# 托盘实际只显示 16~24 像素，拿 256 的图去缩会糊成一团。
+	_tray.icon = load("res://themes/icons/tray.png")
 	_tray.tooltip = APP_TITLE
 	_tray.pressed.connect(_on_tray_pressed)
 	add_child(_tray)
@@ -727,12 +780,39 @@ static func _format_duration(seconds: float) -> String:
 
 # ================================================================ 开机自启
 
+## 清掉旧版遗留在注册表里的自启项，**一次性、静默**。
+##
+## 注意这里**不会**替用户打开开机自启：程序自己永远不去建那个快捷方式，
+## 开关的初始状态永远是「关」（= 启动文件夹里没有快捷方式）。
+## `WinSystem.cleanup_legacy_autostart()` 只删旧位置，界面上不提示、日志里也不写。
+func _cleanup_legacy_autostart_once() -> void:
+	if bool(AppConfig.get_value("legacy_autostart_checked")):
+		return
+	# 编辑器和导出版用的是**不同的配置文件**（工程目录 vs exe 同级），但这里仍然要先挡一道：
+	# 编辑器里 `autostart_supported()` 是 false，迁移根本无从谈起，
+	# 这时候要是把「已检查」记下来，等真的导出成 exe 跑起来时就不会再清理了。
+	if not WinSystem.autostart_supported():
+		return
+	AppConfig.set_value("legacy_autostart_checked", true)
+	WinSystem.cleanup_legacy_autostart()      # 静默清掉，不打扰用户
+	AppConfig.save()
+
+
 func _on_autostart_toggled(on: bool) -> void:
+	# 建快捷方式要起一次 PowerShell，实测约 0.75 秒，而 `OS.execute` 是**阻塞主线程**的。
+	# 所以先让界面把「处理中」这一帧画出来再动手，否则用户看到的是「点了开关，窗口卡死」。
+	_autostart_switch.disabled = true
+	_log("正在%s开机自启（要起一次 PowerShell，界面会短暂无响应）…" % ("启用" if on else "关闭"),
+			LogLevel.INFO)
+	await get_tree().process_frame
 	var ok := WinSystem.enable_autostart() if on else WinSystem.disable_autostart()
+	_autostart_switch.disabled = false
 	if not ok:
 		# 失败就把开关拨回去，别让界面显示一个并没有生效的状态
 		_autostart_switch.set_pressed_no_signal(not on)
-		_alert("设置失败", "没能修改开机自启项，可能是注册表权限受限。")
+		_alert("设置失败",
+				"没能在启动文件夹里%s快捷方式。\n\n位置：%s" % [
+					"创建" if on else "删除", WinSystem.startup_dir()])
 		return
 	_log("已%s开机自启" % ("启用" if on else "关闭"), LogLevel.INFO)
 
@@ -897,27 +977,24 @@ func _close_countdown() -> bool:
 
 # ================================================================ 日志
 
+## 写一行日志。界面上那份交给 `LogView`（自带时间戳、级别配色、500 行一批的裁剪、
+## BBCode 转义），磁盘上那份交给 `LogStore`（按天轮转）。
 func _log(message: String, level: int = LogLevel.INFO) -> void:
-	var stamp := Time.get_datetime_dict_from_system()
-	var hms := "%02d:%02d:%02d" % [stamp["hour"], stamp["minute"], stamp["second"]]
-	var color := _level_color(level)
-	_log_view.append_text("[color=#%s]%s[/color]  %s\n" % [color.to_html(false), hms,
-			_bbcode_escape(message)])
-	while _log_view.get_paragraph_count() > _LOG_MAX_PARAGRAPHS:
-		_log_view.remove_paragraph(0)
+	_log_view.append(message, _level_name(level))
 	_log_store.append("[%s] %s" % [_level_tag(level), message])
 
 
-static func _level_color(level: int) -> Color:
+## 界面的日志级别名 —— `LogView.append()` 收的是字符串，不是枚举。
+static func _level_name(level: int) -> String:
 	match level:
 		LogLevel.OK:
-			return ThemePalette.SUCCESS
+			return "ok"
 		LogLevel.WARN:
-			return ThemePalette.WARNING
+			return "warn"
 		LogLevel.ERROR:
-			return ThemePalette.DANGER
+			return "error"
 		_:
-			return ThemePalette.TEXT_SEC
+			return "info"
 
 
 static func _level_tag(level: int) -> String:
@@ -930,11 +1007,6 @@ static func _level_tag(level: int) -> String:
 			return "错误"
 		_:
 			return "信息"
-
-
-## 消息里可能带 `[`（路径、方括号说明都会），在 bbcode 里会被当标签解析，得转义。
-static func _bbcode_escape(text: String) -> String:
-	return text.replace("[", "[lb]")
 
 
 func _clear_log() -> void:
@@ -955,6 +1027,13 @@ func _log_startup_info() -> void:
 			LogLevel.INFO if SecretStore.key_source() == SecretStore.Source.REGISTRY else LogLevel.WARN)
 	if not _tray_available:
 		_log("当前系统不支持状态栏图标，关闭窗口只能最小化到任务栏", LogLevel.WARN)
+	# 这一条是给「换机器忘了带 dll」准备的：缺了它程序照跑，只是关窗时变成最小化，
+	# 界面上看不出区别 —— 日志里有这行才好查。
+	if _native_window_available():
+		_log("窗口隐藏扩展已加载（关窗后任务栏上不会留按钮）", LogLevel.INFO)
+	else:
+		_log("窗口隐藏扩展不可用（缺 native_window.windows.x86_64.dll，"
+				+ "它应当和 exe 放在一起），关窗时只能最小化到任务栏", LogLevel.WARN)
 	if not WinSystem.autostart_supported():
 		_log("在编辑器里运行，开机自启不可用（导出成 exe 后可用）", LogLevel.INFO)
 
@@ -975,24 +1054,99 @@ func _on_close_requested() -> void:
 		_quit()
 
 
+## 「关闭窗口时」进托盘：把窗口**真正藏起来**（任务栏和 Alt+Tab 上都没有它）。
+##
+## 这一步必须借 `NativeWindow` 这个原生扩展直接调 Win32 的 `ShowWindow` ——
+## Godot 自己的 API 做不到，原因见 `tools/native_window/native_window.c` 顶部的长注释
+## （一句话：`Window::set_visible()` 对主窗口直接 `ERR_FAIL`，而 Windows 后端给主窗口
+## 恒定加 `WS_EX_APPWINDOW`，那就是「必须出现在任务栏」的意思）。
+##
+## 扩展没编出来（`bin/native_window.windows.x86_64.dll` 缺失）时**退回最小化** ——
+## 窗口会在任务栏上留一个按钮，但「关窗后程序继续跑」这件事不受影响。
 func _hide_to_tray() -> void:
-	var win := get_window()
-	win.hide()
-	if win.visible:
-		# 个别平台上主窗口隐藏不了，退回最小化 —— 至少别让用户以为程序卡死了
-		win.mode = Window.MODE_MINIMIZED
-		_log("当前平台无法隐藏窗口，已改为最小化到任务栏", LogLevel.WARN)
-	else:
-		_log("已隐藏到系统托盘（托盘图标上右键可退出）", LogLevel.INFO)
+	if _native_hide():
+		_log("已隐藏到系统托盘（任务栏上不留按钮）。程序继续在后台运行，"
+				+ "点托盘图标可以把它调回来", LogLevel.INFO)
+		return
+	get_window().mode = Window.MODE_MINIMIZED
+	_log("已最小化到任务栏（原生扩展不可用，Godot 自己不允许隐藏主窗口）。"
+			+ "程序继续在后台运行，点托盘图标可以把它调回来", LogLevel.WARN)
 
 
+## 把窗口从隐藏/最小化调回前台。托盘图标被点、或第二个实例启动时都会走到这里。
 func _show_window() -> void:
+	if _native_show():
+		return
 	var win := get_window()
-	if not win.visible:
-		win.show()
+	# 主窗口永远是 visible，不需要（也不能）`show()`
 	if win.mode == Window.MODE_MINIMIZED:
 		win.mode = Window.MODE_WINDOWED
 	win.move_to_foreground()
+
+
+# ---------------------------------------------------------------- 原生窗口扩展
+#
+# 全部走 `ClassDB.class_call_static()` 这种**动态**调用，而不是在脚本里直接写
+# `NativeWindow.hide_window(...)`：后者的前提是那个类必须在编译期就存在，
+# 一旦 .dll 没编出来，**整个脚本会编译不过**（连"退回最小化"的机会都没有）。
+# 动态调用的代价只是每次都查一次 ClassDB，而这里一次关窗只调一次，无所谓。
+
+## 窗口当前是不是被原生扩展藏起来了（`_show_window` 据此决定要不要恢复）。
+var _window_native_hidden := false
+
+## 藏起来之前的帧率上限，`_native_show()` 要还原回去。
+var _max_fps_before_hide := 0
+
+## 窗口藏起来之后把帧率压到多少。
+##
+## 为什么不干脆停掉渲染：`Viewport.render_target_update_mode` 这个属性**只注册在
+## `SubViewport` 上**（虽然是 `viewport.h` 里声明的那个枚举，但 `ADD_PROPERTY` 写在
+## `SubViewport::_bind_methods` 里），根窗口拿不到它，写上去是运行时报错。
+## 所以退而求其次，用 `Engine.max_fps` 把整个主循环憋住 —— 渲染、物理、动画全跟着慢，
+## 而**计时器与协程走的是真实时间**，监控照常跑。
+##
+## 不压到 1（更省）是因为托盘菜单也是 Godot 画的：1fps 下右键托盘图标要等一秒才弹出来。
+## 10fps 既省了 5/6 的开销，菜单又是「立刻」出来的感觉。
+const _HIDDEN_MAX_FPS := 10
+
+
+static func _native_window_available() -> bool:
+	return ClassDB.class_exists(&"NativeWindow") \
+			and bool(ClassDB.class_call_static(&"NativeWindow", &"is_supported"))
+
+
+static func _native_window_handle() -> int:
+	return DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
+
+
+func _native_hide() -> bool:
+	if not _native_window_available():
+		return false
+	var hwnd := _native_window_handle()
+	if hwnd == 0:
+		return false
+	ClassDB.class_call_static(&"NativeWindow", &"hide_window", hwnd)
+	_window_native_hidden = true
+	# 窗口藏起来了，但 **Godot 并不知道** —— 它照样按 60fps 渲染。一个「待在托盘里
+	# 待机一整天」的程序没必要一直烤 GPU，所以把帧率压下来（见 _HIDDEN_MAX_FPS）。
+	_max_fps_before_hide = Engine.max_fps
+	Engine.max_fps = _HIDDEN_MAX_FPS
+	return true
+
+
+func _native_show() -> bool:
+	if not _window_native_hidden:
+		return false
+	var hwnd := _native_window_handle()
+	if hwnd == 0:
+		return false
+	ClassDB.class_call_static(&"NativeWindow", &"show_window", hwnd)
+	_window_native_hidden = false
+	# **先还原帧率再返回**：让它紧接着的那一帧就按正常帧率画出来，
+	# 否则用户点完托盘图标会先看到一秒的卡顿感。
+	Engine.max_fps = _max_fps_before_hide
+	# 扩展把窗口置于最前了（SetForegroundWindow），这里不用再 move_to_foreground
+	return true
 
 
 func _quit() -> void:

@@ -20,6 +20,12 @@ set "EXE_NAME=ReUSTCNet"
 :: 1 = yes, 0 = no
 set "SMOKE_TEST=1"
 
+:: Build the native window extension (bin\native_window.windows.x86_64.dll) before
+:: exporting. It is what lets "close the window" hide it from the taskbar instead of
+:: just minimizing. Needs bash + MinGW gcc; see tools/build_native_window.sh.
+:: 1 = yes, 0 = skip (keep whatever dll already exists)
+set "BUILD_NATIVE=1"
+
 :: Also produce a release archive: none / zip / rar
 ::   rar needs WinRAR (give the full path to Rar.exe below).
 set "PACK=rar"
