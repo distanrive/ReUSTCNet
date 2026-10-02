@@ -9,11 +9,10 @@ logs/
 command.bat
 
 # ---------- 图标源文件 ----------
-# 保留在工作区（导出 exe 时要用），但不进仓库 —— 与旧版一致
-icon.ico
-icon.png
+# 只忽略 PSD 源文件。icon.png / icon.ico **进仓库**：它们是三处图标设置
+# （config/icon、windows_native_icon、preset 的 application/icon）与 README logo
+# 的唯一来源，缺了导出会失败、窗口/托盘会退回 Godot 默认图。
 icon.psd
-icon.png.import
 
 # ---------- 旧版 Python 实现 ----------
 # 本地存档，不作为构建产物。**注意**：这里被忽略意味着 oldversion/ 下的内容不进仓库，

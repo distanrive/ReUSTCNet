@@ -1,5 +1,7 @@
 # ReUSTCNet — 中国科大有线网自动登录与断线重连工具
 
+<img src="icon.png" width="96" alt="ReUSTCNet 图标">
+
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 适用于 **中国科学技术大学（USTC）有线网络** [`wlt.ustc.edu.cn`](http://wlt.ustc.edu.cn) 的后台自动登录与网络保持工具。

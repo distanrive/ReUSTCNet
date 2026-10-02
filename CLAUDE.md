@@ -437,8 +437,9 @@ stop() → _generation += 1
   `export_presets.cfg` 的 `include_filter="icon.ico"`（`all_resources` 模式不带非资源文件）。
 - 托盘图标另有一份 `themes/icons/tray.png`（32×32）：托盘实际只显示 16~24 像素，
   拿 256×256 的图去缩会糊成一团。
-- `icon.ico` / `icon.png` 在 `.gitignore` 里（工作区保留、不进仓库），
-  **换机器克隆之后要记得把这两张图拷过来**，否则导出会失败。
+- `icon.ico` / `icon.png` **进仓库**（`.gitignore` 里只留 `icon.psd` 那个源文件）。
+  它们是三处图标设置的唯一来源，缺了导出会失败、窗口/托盘图标也会退回 Godot 默认图。
+  README 顶部那张 logo 用的就是 `icon.png` —— 改图标时三处 + README 一起换。
 
 ### 密码与密钥
 
