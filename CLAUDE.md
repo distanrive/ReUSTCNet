@@ -47,7 +47,8 @@ scripts/
     ├── command_scheduler.gd# 定时执行指令
     └── log_store.gd        # 日志落盘 + 轮转 + 清理
 tools/
-├── build_template.sh       # 编译精简引擎模板
+├── build_template.sh       # 编译精简引擎模板（会先调用下面那个补丁脚本）
+├── patch_godot_chunked.py  # 给 Godot 源码打「chunk 长度行容错」补丁（**不开就用不了**，见「打包」）
 ├── build_native_window.sh  # 编译原生窗口扩展（bin/native_window.windows.x86_64.dll）
 ├── native_window/          # 那个扩展的 C 源码 + vendored 的 GDExtension 接口头
 └── self_check.gd           # 平台相关部分的自检
@@ -187,6 +188,46 @@ bash tools/build_template.sh          # 20 核约 4 分钟
 并把官方模板**备份一次**为 `windows_release_x86_64.official.bak`。
 `export_presets.cfg` 保持可移植（`custom_template/release` 留空），换机器只改 `build_config.bat`。
 
+#### 引擎源码补丁：chunk 长度行容错（**不开它，校园网上一条请求都发不出去**）
+
+`tools/patch_godot_chunked.py` 给 Godot 源码的 `core/io/http_client_tcp.cpp` 加两处容错，
+`build_template.sh` 每次编译前先跑它（幂等；锚点找不到会**明确报错**，不会悄悄跳过）。
+
+**为什么是硬依赖**（2026-10-03 排查了一整轮，链路每一步都实测过）：
+
+`wlt.ustc.edu.cn` 的响应是 `Transfer-Encoding: chunked`，而它的**分块长度行末尾多一个空格**：
+
+```
+fe5\r\n            ← 第一块，正常
+<4069 字节数据>\r\n
+8c \r\n            ← 第二块：长度后面多了个空格（RFC 7230 只允许十六进制数字）
+```
+
+curl / Chrome / Python 的 requests 都**容错**（跳过空白），所以旧版 Python 一直能用；
+**Godot 4.7 的 HTTP 客户端是严格的**，见到空格就 `ERR_PRINT("HTTP Chunk len not in hex!!")`
+并把状态置成 `STATUS_CONNECTION_ERROR` —— 于是 `HTTPRequest` 返回
+`RESULT_CONNECTION_ERROR`，界面/日志里表现为**「网络请求失败：连接被断开」**。
+
+这个现象**极具误导性**：看起来像网络断了，但**连接和数据都没问题**。实测对照（本地服务器只改那个空格）：
+
+| 分块长度行 | `HTTPRequest` 结果 |
+| --- | --- |
+| `7\r\n`（规范） | `result=0`、`code=200`、body=34 |
+| `7 \r\n`（带空格） | `result=4`、`code=0` + `ERROR: HTTP Chunk len not in hex!!` |
+
+**排查手法值得记下来**（都在本地做，不依赖对方配合）：
+1. 先 `curl` 同一个 URL —— 通了就说明站点没问题，嫌疑在客户端；
+2. Godot 单独请求**另一个**站点（`www.ustc.edu.cn`）做对照 —— 通了就说明 Godot 的 HTTP 本身没坏；
+3. 起一个**记录流量的本地代理**（`HTTPRequest.set_http_proxy` 指过去）—— 能原样看到请求字节和上游响应；
+4. 把上游响应**原样 replay** 到本地服务器上复现 —— 确认触发点在响应里，再二分；
+5. 用 `--verbose` 跑 —— Godot 会打出 `HTTP Chunk len not in hex!!` 这种**平时看不到**的引擎级报错。
+
+修法上刻意**打在引擎里**而不是改脚本：Godot 没有让我们自己控制 HTTP 版本/分块解析的接口，
+而 `HTTPRequest` 的重定向跟随、超时、gzip 解压都是现成好用的，重写一套 HTTP 客户端风险更大。
+**代价**：用官方模板导出的 exe **连不上校园网** —— 所以 `build_config.bat` 里的
+`CUSTOM_TEMPLATE` 不能清空；`tools/self_check.gd` 里那条请求判据也是照这个前提写的。
+升级 Godot 版本时，补丁脚本会在找不到锚点时报错提醒。
+
 #### 关开关时的坑（都是实测撞出来的，别再犯）
 
 - **`module_webp_enabled=no` 会让所有贴图加载失败**。Godot 的「无损」纹理导入
@@ -272,6 +313,106 @@ bash tools/build_template.sh          # 20 核约 4 分钟
   把 UTF-8 字节喂给 GBK 解出来往往一个替换字符都没有、只是全是错字。
 - 改这里之后**必须跑 `tools/self_check.gd`**（里面有「真实 GB2312 页面片段不被误判」这条回归）。
 
+### 页面解析：判据串和值之间**可能隔着标签**
+
+`_extract_ip()` 第一版是「find 到 `IP地址` 之后一路往后扫，**撞到 `<` 就认为这行没有 IP**」——
+而真实页面是：
+
+```html
+<td width=290 align=right>IP地址</td>
+<td width=290>114.214.186.54 </td>
+```
+
+于是它撞上第一个 `</td>` 就返回空串，**永远解不出 IP**（界面表现为
+「没能从页面里解析出本机 IP（页面结构可能变了）」）。旧版 Python 用的正则
+`IP地址</td>\s*<td[^>]*>([\d.]+)` **本来就允许中间有标签**，移植时把这一条丢了。
+
+教训：**判据链上的解析函数，移植或重写时必须拿真实页面复核一遍**，并钉进 `self_check.gd`
+（现在有「隔标签」「紧凑写法」「没有标记时返回空串」「数字不构成 IP 时返回空串」四条回归）。
+这类 bug 和编码那节是同一类：**不报错、只是静默失效**，只有真去连一次网才发现。
+
+### 会话 cookie：**登录之后才算登录**
+
+站点在**登录成功**的响应里下发一个会话 cookie：
+
+```
+Set-Cookie: rn=5AF8BF3D5393AB266C5AE5DA354B0BF8511107C9      (Path=/cgi-bin，会话级)
+```
+
+**之后的 `cmd=disp` / `cmd=set` 必须把它带回去。** 不带，服务端就把你当匿名访客，
+**原样返回登录页**——HTTP 状态码 200、页面也能正常解码，只有中文判据对不上，
+于是界面/日志里只剩一句莫名其妙的：
+
+```
+初始连接失败：出口设置失败：网络通      function getCookie(name) { ...
+```
+
+（`网络通` 就是登录页的 `<TITLE>`；后半截是 `_headline()` 把 `<script>` 里的 JS 当正文抓了出来。）
+
+**为什么重写时会丢**：旧版 Python 用 `requests.Session`，cookie 是自动带上的，整条线索
+在移植时完全隐形。而 **Godot 的 `HTTPRequest` 没有 cookie 罐**，本类又是「每次请求新建一个
+节点、用完 `queue_free()`」，cookie 天然丢光。修法是在 `wlt_client.gd` 里自己存
+（`_cookies` + `_remember_cookies()` / `_cookie_header()`），每次请求带 `Cookie:` 头。
+
+几个实测确认过、别再踩的点：
+
+- **`Set-Cookie` 能读到**：`HTTPRequest.request_completed` 的第 3 个参数（`completed[2]`）
+  是完整的响应头数组，`Set-Cookie: rn=...` 就在里面，不需要换 `HTTPClient`。
+- **`fetch_ip()`（裸 GET）不需要 cookie**：未登录时那个页面本身就是登录表单，
+  「IP地址」和 IP 都在上面。所以**故障只在登录之后**——这会让「取到 IP 了」看起来像好消息。
+- **`login()` 判「成功」用的是 POST 响应里的「拥有的权限」**，那是权限页，所以登录判定是对的；
+  失败的只有后续请求。**别把它当成「登录没成功」去查账号密码。**
+- **`cmd=disp` 同样要带 cookie**，否则 `is_logged_in()` 永远 false：每个周期都重新登录一遍，
+  然后 `cmd=set` 照样失败。
+- 会话过期后服务端会重新返回登录页 → `is_logged_in()` false → 重新登录拿到新 cookie，**自愈**。
+
+**排查手法**（curl 就能做，不用改代码）：
+
+```bash
+# 带 cookie：返回「网络设置成功 / 权限: 国际」
+curl -s -b jar.txt "http://wlt.ustc.edu.cn/cgi-bin/ip?cmd=set&type=4&exp=0&go=+%BF%AA%CD%A8%CD%F8%C2%E7+"
+# 不带 cookie：返回登录页（= 界面上的「出口设置失败：网络通…」）
+curl -s      "http://wlt.ustc.edu.cn/cgi-bin/ip?cmd=set&type=4&exp=0&go=+%BF%AA%CD%A8%CD%F8%C2%E7+"
+```
+
+`tools/self_check.gd` 的 `_check_session_cookies()` 钉了五条（收下 / 带回去 / 丢属性 /
+空值即删除 / 不误收别的头）。
+
+### 时间：`..._from_unix_time()` 系列给的是 **UTC**，不是本地时间
+
+**官方文档在这一处是误导性的**，别照着它写。`Time.get_datetime_dict_from_unix_time()`
+的说明是「返回的字典和 `get_datetime_dict_from_system()` 一样」—— 而后者默认取**本地**时
+（`utc = false`），照着读会以为它已经帮你换算了。实测（2026-10-03，本机 CST）：
+
+```
+系统本地   : 2026-10-03 15:06:18
+系统 UTC   : 2026-10-03 07:06:18
+unix 换算  : 2026-10-03 07:06:18     ← 就是 UTC
+```
+
+所以从 unix 时间戳还原成「给人看的时间」，必须自己加时区偏移：
+
+```gdscript
+var bias := int(Time.get_time_zone_from_system().bias)      # 单位是**分钟**，中国 = 480
+Time.get_datetime_dict_from_unix_time(int(unix_sec) + bias * 60)     # UTC → 本地
+Time.get_unix_time_from_datetime_string(local_str) - bias * 60       # 本地 → 真 unix
+```
+
+反方向同理：`get_unix_time_from_datetime_string()` 把字符串按 **UTC** 解，
+`"2026-10-03T00:00:00"` 解出来是 UTC 的那一秒，比本地零点**早 8 小时**。
+
+踩过的两处（后一处还在，前一处随「运行状态」卡一起删掉了）：
+
+- `app.gd` 状态卡的「最后检测」——显示的是 UTC，比日志里的时间（本地）**整整差 8 小时**。
+  这张卡 2026-10-09 已撤掉（见「界面布局」那节），换算代码随之删除；
+- `log_store.gd` 的 `_purge_old()` ——文件名里是本地日期，按 UTC 解再和 UTC 的 cutoff 比，
+  到期的日志会**提前 8 小时**被删。`tools/self_check.gd` 的 `_check_log_purge()` 钉着这条
+  （那个 `_local_date()` 辅助函数就是「UTC → 本地」的标准写法）。
+
+**只有 `get_datetime_dict_from_system()` / `get_time_string_from_system()` 默认是本地时间**
+（`log_store` 的日志时间戳、`command_scheduler` 的时钟都靠这两条，不用动）。
+日志里打出来的时间戳永远该和墙上时钟一致 —— 改完时间相关的代码**肉眼对一次**。
+
 ### `Label` 的最小宽度 = 整串文字的宽度
 
 把长文字（`"1 教育网出口（国际，仅用教育网访问，适合看文献）"`、日志目录路径、
@@ -279,7 +420,8 @@ bash tools/build_template.sh          # 20 核约 4 分钟
 它会**把整个面板的最低宽度顶大**，窗口装不下就横向溢出（表现为右边的按钮被切掉）。
 处理办法（三选一，都用到过）：
 
-1. 界面上只放**短文本**，完整内容进 `tooltip`（`_status_text`、`_v_export` 就是这么做的）；
+1. 界面上只放**短文本**，完整内容进 `tooltip`（头部的 `_status_text` 就是这么做的：
+   显示的是「已连接 / 重连中」，整句话在它的 `tooltip_text` 和日志里）；
 2. 长选项用 `_stacked()` 单独占一行铺满宽度，别跟标签挤一行；
 3. 状态文字用「短状态 + 完整消息进日志」的结构（`app.gd` 的 `_on_status_changed`）。
 
@@ -296,34 +438,43 @@ bash tools/build_template.sh          # 20 核约 4 分钟
 另外**没定义的图标会回落到引擎默认主题**，而默认滚动条两端是有箭头的 ——
 本项目用全透明的 `empty.svg` 把它们压掉了（尺寸仍是 8×8，点两端步进还在）。
 
-### 界面布局：一个 3×3 网格（运行日志占右下 2×2）
+### 界面布局：一个 2×2 网格
 
 排布是：
 
 ```
-账户          ｜ 网络          ｜ 运行状态
-定时执行指令   ｜  运行日志（占右下 2×2）
-启动与外观     ｜  运行日志（续）
+账户          ｜ 网络
+定时执行指令   ｜ 运行日志
+启动与外观     ｜ 运行日志（续）
 ```
 
 左边一列（账户 / 定时执行指令 / 启动与外观）和上面一行共用「账户」那一格。
 
-**Godot 的 `GridContainer` 不支持跨格**，所以这个排布是用**嵌套**实现的：
-外层是个 2 列的 `GridContainer`，第 1 行右格塞一个 `HBoxContainer`（里面横排网络 + 运行状态），
-第 2 行左格塞一个 `VBoxContainer`（里面竖排定时执行指令 + 启动与外观）。
-几何上与外层那个 3×3（380 + 402 + 340 + 两道 12px 缝 = 1226）**完全一致**，
-「运行日志」的左边界与「账户」的右边界严格重合。
+**Godot 的 `GridContainer` 不支持跨格**，所以左列那沓是用**嵌套**实现的：
+外层是个 2 列的 `GridContainer`，第 2 行左格塞一个 `VBoxContainer`
+（里面竖排定时执行指令 + 启动与外观）；「运行日志」落在第 2 行右格、纵向自己长满。
+几何上整块是 400 + 12 + 402 = **814 × 641**（左列钉死在 `CARD_MIN_W`，
+右列由「网络」卡里那串长出口名顶到 402），「运行日志」的左边界与「账户」的右边界严格重合。
+
+> 这里原来还有一张「运行状态」卡（连接状态 / 目标出口 / 本机 IP / 连续运行 / 最后检测），
+> 与「网络」并排放在第 1 行右格的那个 `HBox` 里。2026-10-09 按需求**整张撤掉**了，
+> 连带删掉了喂它的那套计时：`NetMonitor` 的 `connected_since` / `uptime_seconds()` /
+> `last_check_unix` / `last_check_ok` / `consecutive_failures` / `last_ip`，
+> 以及 `app.gd` 的 `_ui_timer`（1 秒刷新一次）、`_refresh_runtime()`、`_format_duration()`。
+> 撤卡后整块固有尺寸从 1226×641 掉到 814×641，`WINDOW_DEFAULT_W` 也跟着从 1300 调到 900
+> （先试过 1100，实际开出来右列有 656px、横向明显空荡 —— 左列固定 400，
+> 窗口每宽 100px 右列就跟着胖 100px，所以这个值要贴着固有宽度给）。
 
 几条容易改坏的地方：
 
 - **`GridContainer` 把富余宽度在可扩展列之间「平均」分，根本不看 `size_flags_stretch_ratio`**
   （源码里就是 `remaining_space.width / col_expanded.size()`）。想靠 ratio 调列宽是白费劲。
 - 它的分配还有个反直觉之处：**某一列的固有宽度超过剩余空间一半时，那一列会被钉死，
-  剩下的宽度全塞给另一列**。所以让左列也参与扩展的话，默认尺寸下会变成 442｜402｜400
-  —— 左列白白胖胖，右边两张反而更窄。现在的做法是**左列不设 EXPAND**、
-  宽度钉在 `ThemePalette.CARD_MIN_W` 上，多出来的宽度全给右边 → 400｜422｜422。
+  剩下的宽度全塞给另一列**。所以让左列也参与扩展的话，左列会白白胖胖、
+  右边的日志反而更窄。现在的做法是**左列不设 EXPAND**、宽度钉在 `ThemePalette.CARD_MIN_W` 上，
+  多出来的宽度全给右列（网络 + 日志）→ 400｜剩下的全归右边。
 - 外面套一层**页面级 `ScrollContainer`**：窗口比内容小时整体滚动，两行一起动。
-  横向用 `AUTO` 而不是 `DISABLED` —— 这套布局的固有最小宽度有一千两百多像素
+  横向用 `AUTO` 而不是 `DISABLED` —— 这套布局的固有最小宽度有八百多像素
   （「网络」卡里那串长出口名的宽度），屏幕小/缩放大的机器上出个横向滚动条兜底，
   总比把右边裁掉强。**不要**给某一列单独套 `ScrollContainer`：那就成了「一边滚一边不动」，
   接缝立刻错开。
@@ -347,11 +498,27 @@ bash tools/build_template.sh          # 20 核约 4 分钟
 - `Window.min_size` 也是物理像素，`AppShell` 会乘上缩放系数。
 - `DisplayServer.screen_get_scale()` 在 Windows 上**恒返回 1.0**（官方文档：只在
   Android/iOS/Web/macOS/Linux-Wayland 上实现），所以要回退到 `screen_get_dpi() / 96`。
+- **`--reset-window`＝「用当前默认几何」，不是「什么都不做」**（2026-10-09 修的 bug）：
+  `_apply_default_size()` 原本只挂在 `_restore_window_geometry()` 的「没有存档尺寸」分支里，
+  带 `--reset-window` 启动时两个函数都不走，窗口就停在 `project.godot` 的 viewport 尺寸
+  （1080×720）上 —— 那**不是任何一个我们定义过的尺寸**，于是改 `WINDOW_DEFAULT_W/H`
+  怎么改都「看不出来」。现在 `_ready()` 里是 `if _restore_window: 恢复 else: 用默认`。
+- **存档的窗口尺寸优先于 `WINDOW_DEFAULT_W/H`**：`[window] width/height` 一存在，
+  启动就按它开（这是「记住用户拖过的大小」，不是 bug）。想看到新默认值，
+  要么删配置，要么**带 `--reset-window` 跑一次**。排查「改了默认尺寸却没生效」时先看这条。
+- **单实例守卫会拦住你的干净测试**：另一个 ReUSTCNet 还在跑时，新起的进程会
+  唤起**已有窗口**（旧尺寸、旧界面）然后自己退出（`instance_guard.gd`），看起来就像
+  「新版本没生效」。要干净测就加 `--no-instance-guard`，或者先把托盘里那个退掉。
+- **默认档位是 100%，不是「跟随系统」**（2026-10-09 改的）。`AppShell._scale_setting`
+  的初值就是 `1.0`，所以新装的机器一律 100%；`0.0`（`UI_SCALE_FOLLOW_SYSTEM`）这个哨兵
+  仍然有效，只是要用户自己去下拉框里选。理由：Windows 上 `screen_get_scale()` 恒为 1.0，
+  「跟随系统」实际只能靠 `screen_get_dpi() / 96` 猜 —— 本机 DPI 是 120，
+  一「跟随系统」界面就整体放大 1.25 倍，而用户多半并不想要。
 - **别把「配置里选了具体档位」误读成「系统 DPI 没读对」**（我误诊过一次）：
   启动日志那行的 `来源` 字段就是答案 —— 写的是**配置文件路径**，说明档位是**配置里存着的**
   （`scale=1.0` = 用户选了 100%），这时 `_effective_scale()` 直接返回它、**压根不去问系统 DPI**；
-  只有值是 `0.0` 那个哨兵（`UI_SCALE_FOLLOW_SYSTEM`）时才是「跟随系统」，才会调
-  `detect_system_scale()`。要验证系统 DPI，得先把配置删了或者在界面里选「跟随系统」。
+  写「默认 100%」则是配置里还没有这一项；只有值是 `0.0` 那个哨兵时才是「跟随系统」，
+  才会调 `detect_system_scale()`。
 
 ### 线程与协程
 
@@ -567,12 +734,19 @@ func _theme_color(name, fallback):    # 4) 颜色走主题类型；注意 Godot 
       指向当前 exe，再取消勾选确认它被删掉
 - [ ] 动过图标设置：`build.bat test` 后确认 exe 图标是自定义的（不是 Godot 机器人），
       且 `icon.ico` 在 `dist\ReUSTCNet.pck` 里（`grep -a "res://icon.ico" dist\ReUSTCNet.pck`）
+- [ ] 动过 `wlt_client.gd` 的**判据或解析**（`decode_body` / `_extract_ip` / `_encode_form`）：
+      `self_check.gd` 全过，**并且真连一次网**（起界面点「启动」，看日志有没有
+      「连接被断开」「没能解析出本机 IP」这类）。这类 bug 的共同点是
+      **不报错、只是静默失效**，`--quit-after` 跑几百帧查不出来（2026-10-03 一次逮到两个）
+- [ ] 重编过模板 / 动过 `tools/patch_godot_chunked.py`：**用导出的 exe 真连一次**，
+      确认日志里不再出现「网络请求失败：连接被断开」（那条 = 引擎的分块解析把
+      站点那些带空格的长度行判死了，见「引擎源码补丁」那节）
 - [ ] 动过 `tools/native_window/` 或 `.gdextension`：`bash tools/build_native_window.sh`
       → `--import` → **用窗口模式**跑 `self_check.gd`（headless 下那一项会跳过），
       确认三条断言都过；再 `build.bat test`，确认 `dist\` 里有那个 dll、
       且导出后跑一次的日志里有「窗口隐藏扩展已加载」
-- [ ] 动过界面布局：**截图看一眼**（`--script` 渲成 PNG）—— 三列宽度大致相等、
-      接缝对齐、初始窗口 1300×760 下**不出现任何滚动条**。改过卡片内容后重新量
+- [ ] 动过界面布局：**截图看一眼**（`--script` 渲成 PNG）—— 接缝对齐、
+      初始窗口 900×760 下**不出现任何滚动条**。改过卡片内容后重新量
       `GridContainer.get_combined_minimum_size()`，必要时同步 `WINDOW_DEFAULT_W/H`
 - [ ] 动过 `instance_guard.gd`：起两个进程，**第二个应在 1 秒内自己退出**
       （`--quit-after 1800` 的第一个进程放后台，再起第二个并计时；第二个跑满十几秒就是没认出来）

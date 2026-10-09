@@ -36,6 +36,15 @@ echo "编译器: $(gcc --version | head -1)"
 SCONS="C:/Users/YH/.conda/envs/normal/Scripts/scons.exe"
 [ -x "$SCONS" ] || { echo "[错误] 找不到 scons: $SCONS"; exit 1; }
 
+# ---- 给 Godot 源码打上「chunk 长度行容错」补丁（必须，幂等）----
+# 不开这个补丁，本程序在校园网上**一条请求都发不出去**：wlt.ustc.edu.cn 的分块长度行
+# 末尾多一个空格（违反 RFC，但 curl/浏览器都容错），而 Godot 4.7 的 HTTP 客户端是严格的，
+# 会把它判成 STATUS_CONNECTION_ERROR —— 表面看像"连接被断开"。完整的排查过程见
+# tools/patch_godot_chunked.py 顶部。**用官方模板导出的 exe 会连不上**，所以这一步不能省。
+PY="C:/Users/YH/.conda/envs/normal/python.exe"
+[ -x "$PY" ] || PY="python"
+"$PY" tools/patch_godot_chunked.py || { echo "[错误] 补丁未打上，别用官方模板导出（会连不上校园网）"; exit 1; }
+
 # 注意 **webp 不能关**：Godot 的「无损」纹理导入（compress/mode=0）内部就是用 WebP
 # 存的，.ctex 里装的是 WebP 编码的图。关掉它会让所有贴图在运行时加载失败
 # （实测症状：`Failed loading resource: res://themes/icons/*.svg` +

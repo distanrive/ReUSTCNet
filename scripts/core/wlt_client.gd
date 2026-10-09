@@ -23,6 +23,19 @@ const MARK_NET_FAULT := "网络故障"
 ## 解码后没解出来的那些字会变成这个字符（U+FFFD）。
 const REPLACEMENT := "�"
 
+## 会话 cookie：`名字 -> 值`。
+##
+## **这是这个站点「登录之后」才算登录的关键。** 登录请求的响应里带
+## `Set-Cookie: rn=<会话号>`（`Path=/cgi-bin`，会话级），之后的 `cmd=disp` / `cmd=set`
+## 都要把它带回去；不带，服务端就当你是匿名访客，**原样返回登录页**——
+## HTTP 状态码仍是 200、页面也正常解码，只有中文判据对不上，
+## 表现成「出口设置失败：网络通…」（`网络通` 是登录页的 `<TITLE>`）。
+##
+## 旧版 Python 用 `requests.Session` 自动做了这件事，所以从没暴露过；
+## **Godot 的 `HTTPRequest` 没有 cookie 罐**，而本类每次请求都新建一个节点、
+## 用完就 `queue_free()`，于是 cookie 天然丢光。只能自己存、自己带。
+var _cookies: Dictionary = {}
+
 ## 出口编号 → 界面显示名。编号即 `cmd=set` 的 type 参数。
 ## 顺序与文案沿用旧版（含括号里的官方说明），不要随手改：用户是照着它在网页上对号的。
 const EXPORT_TYPES: Array = [
@@ -146,9 +159,8 @@ static func export_name(value: String) -> String:
 
 ## 去掉括号里那段官方说明的短名字（"1 教育网出口（国际，仅用教育网访问，适合看文献）" → "1 教育网出口"）。
 ##
-## 状态卡里必须用短名字：完整名字有 26 个字，`Label` 的最小宽度就是整串文字的宽度，
-## 放进 `GridContainer` 会把整个右侧面板的宽度顶出去，窗口装不下就横向溢出。
-## 完整名字放进 tooltip，信息不丢。
+## 日志里用短名字：完整名字有 26 个字，而这条消息**每个检查周期都要写一遍**，
+## 括号里的说明看界面上的下拉框就够了。完整名字留给需要它的地方（tooltip 等）。
 static func export_short_name(value: String) -> String:
 	var full := export_name(value)
 	var at := full.find("（")
@@ -181,6 +193,8 @@ func _request(url: String, method: HTTPClient.Method, body: String) -> Reply:
 	])
 	if method == HTTPClient.METHOD_POST:
 		headers.append("Content-Type: application/x-www-form-urlencoded")
+	if not _cookies.is_empty():
+		headers.append("Cookie: " + _cookie_header())
 
 	var err := http.request(url, headers, method, body)
 	if err != OK:
@@ -192,9 +206,12 @@ func _request(url: String, method: HTTPClient.Method, body: String) -> Reply:
 	var completed: Array = await http.request_completed
 	var result: int = completed[0]
 	var code: int = completed[1]
+	var resp_headers: PackedStringArray = completed[2]
 	var raw: PackedByteArray = completed[3]
 	http.queue_free()
 	reply.code = code
+	# 先收 cookie 再判成败：一次失败的登录也可能带着新的会话号回来。
+	_remember_cookies(resp_headers)
 
 	if result != HTTPRequest.RESULT_SUCCESS:
 		reply.message = "网络请求失败：%s" % _result_text(result)
@@ -227,6 +244,38 @@ static func _result_text(result: int) -> String:
 			return "TLS 握手失败"
 		_:
 			return "错误码 %d" % result
+
+
+## 拼出下一次请求要带的 `Cookie:` 头。
+func _cookie_header() -> String:
+	var parts := PackedStringArray()
+	for name in _cookies:
+		parts.append("%s=%s" % [name, _cookies[name]])
+	return "; ".join(parts)
+
+
+## 从响应头里收下 `Set-Cookie`。只留「名字=值」，`Path` / `Expires` 之类的属性不要。
+##
+## 响应头就是 `request_completed` 的第 3 个参数，每个头一条数组元素；
+## **多个 `Set-Cookie` 不会被合并**（2026-10-03 用本地双 cookie 服务器实测：
+## 两条 `Set-Cookie` 就是数组里的两条），所以这里逐条处理即可。
+func _remember_cookies(headers: PackedStringArray) -> void:
+	for line in headers:
+		var colon := line.find(":")
+		if colon < 0:
+			continue
+		if line.substr(0, colon).strip_edges().to_lower() != "set-cookie":
+			continue
+		var pair := line.substr(colon + 1).strip_edges().split(";")[0]   # 丢掉属性段
+		var eq := pair.find("=")
+		if eq <= 0:
+			continue
+		var name := pair.substr(0, eq).strip_edges()
+		var val := pair.substr(eq + 1).strip_edges()
+		if val.is_empty():
+			_cookies.erase(name)          # 空值 = 服务端要求删除
+		else:
+			_cookies[name] = val
 
 
 ## 表单编码。**按 GB2312 编码后再做百分号转义** ——
@@ -407,12 +456,22 @@ static func _extract_ip(html: String) -> String:
 	var at := html.find("IP地址")
 	if at < 0:
 		return ""
-	var i := at
-	while i < html.length():
+	# **标记和 IP 之间隔着标签**，所以要跳过标签而不是撞到 `<` 就放弃。
+	#
+	# 真实页面长这样（2026-10-03 抓的）：
+	#     <td width=290 align=right>IP地址</td>
+	#     <td width=290>114.214.186.54 </td>
+	# 第一版是「find 到 IP地址 之后一路往后扫，撞到 `<` 就认为这行没有 IP」——
+	# 于是它撞上 `</td>` 立刻返回空串，**永远解不出 IP**（表现成「页面结构可能变了」）。
+	# 旧版 Python 用的正则 `IP地址</td>\s*<td[^>]*>([\d.]+)` 本来就允许中间有标签，
+	# 移植时把这一条丢了。（教训：判据链上的解析函数，移植时要拿真实页面复核。）
+	var i := at + "IP地址".length()
+	var limit := mini(html.length(), i + 300)     # 别一路扫到页面别处去
+	while i < limit:
 		var c := html[i]
 		if (c >= "0" and c <= "9") or c == ".":
 			var ip := ""
-			while i < html.length():
+			while i < limit:
 				var d := html[i]
 				if (d >= "0" and d <= "9") or d == ".":
 					ip += d
@@ -425,7 +484,11 @@ static func _extract_ip(html: String) -> String:
 				return ip
 			return ""
 		if c == "<":
-			return ""        # 撞到标签了，说明这一行里没有 IP
+			var close := html.find(">", i)        # 整个标签跳过去
+			if close < 0:
+				return ""
+			i = close + 1
+			continue
 		i += 1
 	return ""
 

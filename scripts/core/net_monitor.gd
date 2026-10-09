@@ -23,13 +23,6 @@ const _SLEEP_STEP := 0.25      # 等待的切片长度：让「停止」最多 0
 var running := false
 var phase := Phase.IDLE
 
-# ---- 给状态卡用的统计 ----
-var connected_since := 0.0       # 本次连续在线开始的时间（unix 秒）；0 = 未在线
-var last_check_unix := 0.0
-var last_check_ok := false
-var consecutive_failures := 0    # 连续失败次数（界面据此显示「连续 N 次」，一眼看出是不是线路不稳）
-var last_ip := ""                # 最近一次取到的本机 IP（给状态卡显示）
-
 var _generation := 0
 var _host: Node                  # 用来取 SceneTree 建计时器
 var _client: WltClient
@@ -61,17 +54,9 @@ func stop() -> void:
 		return
 	running = false
 	phase = Phase.IDLE
-	connected_since = 0.0
 	_generation += 1            # 旧协程在下一个检查点自杀
 	running_changed.emit(false)
 	_emit("已停止监控网络连接", Kind.IDLE)
-
-
-## 本次连续在线的秒数（供状态卡显示「连续运行」）；不在线时返回 0。
-func uptime_seconds() -> float:
-	if connected_since <= 0.0:
-		return 0.0
-	return Time.get_unix_time_from_system() - connected_since
 
 
 # ---------------------------------------------------------------- 主循环
@@ -96,13 +81,10 @@ func _loop(gen: int) -> void:
 		if not _alive(gen):
 			return
 
-		last_check_unix = Time.get_unix_time_from_system()
 		var r: WltClient.Reply = await _client.check_permission()
 		if not _alive(gen):
 			return
-		last_check_ok = r.online and r.ok
-
-		if last_check_ok:
+		if r.online and r.ok:
 			var recovered := phase == Phase.FAST
 			phase = Phase.NORMAL
 			_mark_online()
@@ -113,7 +95,6 @@ func _loop(gen: int) -> void:
 			continue
 
 		# ---- 以下都是「确认断网」的路径 ----
-		consecutive_failures += 1
 		if r.online:
 			_emit("网络异常，准备重连", Kind.WARN)
 		else:
@@ -143,7 +124,6 @@ func _reconnect(gen: int) -> Dictionary:
 	if not ip_reply.ok:
 		return {"ok": false, "message": ip_reply.message}
 	var ip := ip_reply.message
-	last_ip = ip
 
 	var logged: WltClient.Reply = await _client.is_logged_in()
 	if not _alive(gen):
@@ -172,8 +152,6 @@ func _reconnect(gen: int) -> Dictionary:
 ## 旧版只在 fast 分支复位了 proxy_closed，于是「一次运行里系统代理只会被关一次」：
 ## 首次断网关掉之后，标志位一直是 true，之后再断网就再也不关了。
 func _mark_online() -> void:
-	connected_since = Time.get_unix_time_from_system()
-	consecutive_failures = 0
 	_proxy_closed = false
 
 
@@ -189,8 +167,10 @@ func _maybe_close_proxy() -> void:
 		_emit("尝试关闭系统代理失败（注册表写入被拒绝）", Kind.WARN)
 
 
+## 日志里的出口名用**短名**：完整名那串「（国际，仅用教育网访问，适合看文献）」
+## 每个周期都要写一遍，一条日志摊得很长；括号里的说明看界面上的下拉框即可。
 func _ok_message() -> String:
-	return "当前出口 %s" % WltClient.export_name(str(_params.get("export_type", "")))
+	return "当前出口 %s" % WltClient.export_short_name(str(_params.get("export_type", "")))
 
 
 func _interval_for_phase() -> float:

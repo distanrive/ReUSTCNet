@@ -1,6 +1,7 @@
 extends SceneTree
 ## 自检：把「没法靠看界面发现、但一坏就全坏」的平台相关部分逐个验一遍。
 ##
+##   页面解析    从真实页面结构里抠不抠得出本机 IP（隔着标签也要抠得出）
 ##   编码解码    GB2312 页面能不能解成中文（判据全靠它，错了会静默失效）
 ##   表单编码    中文参数有没有按 GB2312 出去、有没有多带结尾空字节
 ##   密码往返    SecretStore 加密→解密能不能还原（含中文密码）
@@ -25,9 +26,12 @@ const _REPLACEMENT := "\uFFFD"
 
 func _initialize() -> void:
 	var failed := 0
+	failed += _check_extract_ip()
 	failed += _check_decode()
 	failed += _check_form_encoding()
+	failed += _check_session_cookies()
 	failed += _check_secret_round_trip()
+	failed += _check_log_purge()
 	failed += _check_registry_round_trip()
 	failed += _check_autostart_helpers()
 	failed += await _check_scrollbars()
@@ -38,6 +42,41 @@ func _initialize() -> void:
 
 
 # ---------------------------------------------------------------- 各项检查
+
+## 从页面里抠本机 IP。
+##
+## 这条盯的是一个**移植时丢掉的细节**：真实页面里「IP地址」和值之间**隔着两个标签**——
+##     <td width=290 align=right>IP地址</td>
+##     <td width=290>114.214.186.54 </td>
+## 第一版 `_extract_ip()` 是「从 IP地址 往后扫，撞到 `<` 就认为这行没有 IP」，
+## 于是它撞上 `</td>` 立刻返回空串、**永远解不出 IP**（界面上表现为
+## 「没能从页面里解析出本机 IP（页面结构可能变了）」）。
+## 下面这段就是 2026-10-03 从真站抓下来的原文，别再让它退化。
+func _check_extract_ip() -> int:
+	var real := "\n\t\t\t<td width=290 align=right>IP地址</td>\n" \
+			+ "\t\t\t<td width=290>114.214.186.54 </td>\n" \
+			+ "\t\t\t<input type=hidden name=ip value=114.214.186.54>\n"
+	var failed := _report("页面解析（标记与值之间隔着标签）",
+			WltClient._extract_ip(real) == "114.214.186.54",
+			"解出 %s" % WltClient._extract_ip(real))
+
+	# 标签挨着写（旧版 Python 的正则就是按这个形状写的）
+	var inline := "<td>IP地址</td><td class=x>10.0.0.7</td>"
+	failed += _report("页面解析（紧凑写法）",
+			WltClient._extract_ip(inline) == "10.0.0.7", "解出 %s" % WltClient._extract_ip(inline))
+
+	# 没有这个标记就该老实返回空串，别去页面别处乱抓数字
+	var absent := "<html><body>网络通</body></html>"
+	failed += _report("页面解析（没有 IP地址 标记时返回空串）",
+			WltClient._extract_ip(absent) == "", "解出 %s" % WltClient._extract_ip(absent))
+
+	# 标记后面的数字不构成 a.b.c.d 时也别硬凑
+	var garbage := "<td>IP地址</td><td>版本 2.5 </td>"
+	failed += _report("页面解析（数字不构成 IP 时返回空串）",
+			WltClient._extract_ip(garbage) == "", "解出 %s" % WltClient._extract_ip(garbage))
+	return failed
+
+
 
 ## GB2312 页面解码。用合成的字节（「网络通 IP地址 帐户」），不联网。
 ##
@@ -111,6 +150,86 @@ func _check_form_encoding() -> int:
 	return _report("表单编码（中文走 GB2312 且无结尾 NUL）",
 			got == "%B5%C7%C2%BC%D5%CA%BB%A7", "得到 %s" % got) \
 			+ _report("表单编码（ASCII 与空格）", ascii_part == "a+b%26c", "得到 %s" % ascii_part)
+
+
+## 会话 cookie：登录响应里的 `Set-Cookie` 必须被收下、并在后续请求里带回去。
+##
+## 这一条是 2026-10-03 那次「连不上」的根因回归。站点在登录成功时下发
+## `Set-Cookie: rn=<会话号>`（`Path=/cgi-bin`），之后的 `cmd=disp` / `cmd=set`
+## **不带它就一律返回登录页** —— HTTP 状态码 200、页面也能正常解码，
+## 只有中文判据对不上，最后只表现成一句「出口设置失败：网络通…」
+## （`网络通` 是登录页的 `<TITLE>`）。旧版 Python 用 `requests.Session`
+## 自动带 cookie，所以这条线索在移植时整个是隐形的。
+func _check_session_cookies() -> int:
+	var c := WltClient.new()
+	c._remember_cookies(PackedStringArray([
+		"Date: Sat, 03 Oct 2026 06:55:20 GMT",
+		"Set-Cookie: rn=5AF8BF3D5393AB266C5AE5DA354B0BF8511107C9",
+		"Content-Type: text/html",
+	]))
+	var failed := _report("会话 cookie 收下（rn）",
+			str(c._cookies.get("rn", "")) == "5AF8BF3D5393AB266C5AE5DA354B0BF8511107C9",
+			"得到 %s" % str(c._cookies))
+	failed += _report("会话 cookie 带回去",
+			c._cookie_header() == "rn=5AF8BF3D5393AB266C5AE5DA354B0BF8511107C9",
+			"得到 %s" % c._cookie_header())
+
+	# 属性（Path=…）不属于 cookie 的值；头名大小写不敏感
+	c._remember_cookies(PackedStringArray(["set-cookie: SID=abc; Path=/cgi-bin; HttpOnly"]))
+	failed += _report("会话 cookie 丢属性、认小写头名",
+			c._cookie_header().contains("SID=abc") and not c._cookie_header().contains("Path"),
+			"得到 %s" % c._cookie_header())
+
+	# 空值 = 服务端要求删除
+	c._remember_cookies(PackedStringArray(["Set-Cookie: SID="]))
+	failed += _report("会话 cookie 空值即删除", not c._cookies.has("SID"), "得到 %s" % str(c._cookies))
+
+	# 别的头不能被误收
+	var before := c._cookies.size()
+	c._remember_cookies(PackedStringArray(["Content-Type: text/html", "X-Set-Cookie: bad=1"]))
+	failed += _report("非 Set-Cookie 头不误收", c._cookies.size() == before, "得到 %s" % str(c._cookies))
+
+	c.free()
+	return failed
+
+
+## 过期日志清理：**这个函数会删用户的文件**，只准删超过 `KEEP_DAYS` 天的。
+##
+## 顺带钉住时区：文件名里是**本地**日期，而 `get_unix_time_from_datetime_string()`
+## 按 **UTC** 解，不减掉 bias 的话每个文件都被算早 8 小时，边界那天会提前被删。
+func _check_log_purge() -> int:
+	var dir := OS.get_cache_dir().path_join("reustcnet_selfcheck_logs")
+	DirAccess.make_dir_recursive_absolute(dir)
+	for f in DirAccess.get_files_at(dir):
+		DirAccess.remove_absolute(dir.path_join(f))
+
+	var now := int(Time.get_unix_time_from_system())
+	var old_name := "log_%s.txt" % _local_date(now - 15 * 86400)
+	var fresh_name := "log_%s.txt" % _local_date(now - 13 * 86400)
+	for n in [old_name, fresh_name, "not_a_log.txt"]:
+		var f := FileAccess.open(dir.path_join(n), FileAccess.WRITE)
+		f.store_string("x\n")
+		f.close()
+
+	var _store := LogStore.new(dir)      # _init 里就会跑一次清理
+	var left := DirAccess.get_files_at(dir)
+	var failed := _report("过期日志被删（15 天前）", not left.has(old_name), "剩下 %s" % str(left))
+	failed += _report("未过期日志保留（13 天前，KEEP_DAYS=%d）" % LogStore.KEEP_DAYS,
+			left.has(fresh_name))
+	failed += _report("不匹配命名规则的文件不动", left.has("not_a_log.txt"))
+
+	for f in DirAccess.get_files_at(dir):
+		DirAccess.remove_absolute(dir.path_join(f))
+	DirAccess.remove_absolute(dir)
+	return failed
+
+
+## 本地日期串（`YYYY-MM-DD`）。**注意 `get_datetime_dict_from_unix_time()` 给的是 UTC**，
+## 要自己加时区偏移（bias 的单位是分钟）。
+static func _local_date(unix_sec: int) -> String:
+	var d := Time.get_datetime_dict_from_unix_time(
+			unix_sec + int(Time.get_time_zone_from_system().bias) * 60)
+	return "%04d-%02d-%02d" % [d.year, d.month, d.day]
 
 
 ## 密码加解密往返。顺带确认「密文不是明文」。

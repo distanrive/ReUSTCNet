@@ -27,7 +27,11 @@ var config := ConfigFile.new()
 ## 配置文件的实际路径。暴露出来是为了在界面上告诉用户「配置存在哪」。
 var config_path := ""
 
-var _scale_setting := ThemePalette.UI_SCALE_FOLLOW_SYSTEM   # 0 = 跟随系统
+## 默认档位是 **100%**（不是「跟随系统」）：Windows 上 `screen_get_scale()` 恒为 1.0，
+## 「跟随系统」实际只能靠 `screen_get_dpi() / 96` 猜，在个别显示器/远程桌面上会猜出
+## 一个用户并不想要的大小。要让用户自己改就走界面上的下拉框。
+## （`UI_SCALE_FOLLOW_SYSTEM` 这个哨兵值仍然有效，只是不再当默认值。）
+var _scale_setting := 1.0
 var _scale_from_cli := false     # 命令行给的缩放是临时覆盖，不写回配置文件
 var _restore_window := true
 var _save_countdown := -1.0      # >0 表示有待落盘的改动（防抖）
@@ -39,7 +43,7 @@ func _ready() -> void:
 	AppPaths.ensure_dir(config_path.get_base_dir())
 	config.load(config_path)     # 首次运行没有这个文件，返回非 OK，忽略即可
 
-	var source := "跟随系统"
+	var source := "默认 100%"
 	if cli.has("ui_scale"):
 		_scale_setting = cli["ui_scale"]
 		_scale_from_cli = true
@@ -51,8 +55,15 @@ func _ready() -> void:
 		_restore_window = false
 
 	_apply_scale()
+	# `--reset-window` 的语义是「**恢复到默认几何**」，不是「什么都不做」——
+	# 默认尺寸的计算（`_apply_default_size()`）原本只挂在 `_restore_window_geometry()`
+	# 的「没有存档尺寸」分支里，于是带 `--reset-window` 启动时两边都不走，
+	# 窗口停在 `project.godot` 的 viewport 尺寸（1080×720）上。
+	# 那不是任何一个我们定义过的尺寸，改了 `WINDOW_DEFAULT_W/H` 也看不出来。
 	if _restore_window:
 		_restore_window_geometry()
+	else:
+		_apply_default_size()
 
 	var win := get_window()
 	win.size_changed.connect(_on_window_changed)

@@ -25,15 +25,9 @@ var _monitor: NetMonitor
 var _scheduler: CommandScheduler
 var _log_store: LogStore
 
-# ---- 头部与状态卡 ----
+# ---- 头部 ----
 var _dot: StatusDot
-var _card_dot: StatusDot
 var _status_text: FlashLabel
-var _card_status: Label
-var _v_export: Label
-var _v_ip: Label
-var _v_uptime: Label
-var _v_last_check: Label
 var _start_btn: Button
 var _stop_btn: Button
 var _hide_btn: Button
@@ -62,7 +56,6 @@ var _tray: StatusIndicator
 var _tray_menu: PopupMenu
 
 var _save_timer: Timer
-var _ui_timer: Timer
 var _alert_dialog: AcceptDialog
 var _cd_dialog: Window
 var _cd_ring: CircularProgressBar
@@ -132,16 +125,15 @@ func _build_ui() -> void:
 
 	# 整体是「2 列 × 2 行」的网格，布局是：
 	#
-	#     账户      | 网络      | 运行状态
-	#     定时执行指令 |          运行日志
-	#     启动与外观  |          运行日志（续）
+	#     账户          | 网络
+	#     定时执行指令   | 运行日志
+	#     启动与外观     | 运行日志（续）
 	#
-	# 视觉上的三列里，右边那一列其实是**网格第 1 行右格里的一个 HBox** 再横排两张卡。
-	# 为什么不直接用一个 3 列的网格：那样「定时执行指令 / 启动与外观」只能塞进某一列，
-	# 而下面的「运行日志」需要横跨两列 —— GridContainer 不支持跨格。
-	# 这样套一层的好处是**左下/下方那条竖向分界线仍然与「账户」的右边界严格对齐**；
-	# 靠 `size_flags_stretch_ratio` 是做不到的，Godot 的 GridContainer 把富余宽度在
-	# 可扩展的列之间**平均**分，压根不看 ratio（`grid_container.cpp` 里是
+	# 左边那两格是同一个 VBox（定时执行指令 / 启动与外观），左下那条竖向分界线
+	# 因此与「账户」的右边界严格对齐；「运行日志」占满整个右列 ——
+	# GridContainer 不支持跨格，所以它落在第 2 行右格，纵向自己长满。
+	# 列宽别指望 `size_flags_stretch_ratio`：Godot 的 GridContainer 把富余宽度在
+	# 可扩展的列之间**平均**分（`grid_container.cpp` 里是
 	# `remaining_space.width / col_expanded.size()`）。
 	var body := GridContainer.new()
 	body.columns = 2
@@ -156,13 +148,8 @@ func _build_ui() -> void:
 	# 第 1 行左：账户
 	body.add_child(_build_account_card())
 
-	# 第 1 行右：网络 ｜ 运行状态（横排）
-	var top_right := HBoxContainer.new()
-	top_right.add_theme_constant_override("separation", 12)
-	top_right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	top_right.add_child(_build_network_card())
-	top_right.add_child(_build_status_card())
-	body.add_child(top_right)
+	# 第 1 行右：网络
+	body.add_child(_build_network_card())
 
 	# 第 2 行左：定时执行指令 / 启动与外观（竖排）
 	var bottom_left := VBoxContainer.new()
@@ -201,7 +188,7 @@ func _build_header() -> Control:
 	_status_text.custom_minimum_size.x = 96
 	header.add_child(_vcenter(_status_text))
 
-	_start_btn = _button("启动", "AccentButton", _start_monitoring)
+	_start_btn = _button("启动", "SuccessButton", _start_monitoring)
 	_stop_btn = _button("停止", "DangerButton", _stop_monitoring)
 	_stop_btn.disabled = true
 	header.add_child(_start_btn)
@@ -218,10 +205,10 @@ func _build_account_card() -> Control:
 	var card := TitledGroup.new()
 	card.title = "账户"
 	# 横向**不设 EXPAND**：第 0 列（= 本卡片与下方的「定时执行指令 / 启动与外观」）
-	# 宽度就钉在 CARD_MIN_W 上，窗口变宽时多出来的宽度全给右边两列 —— 日志需要宽度，
-	# 而这条规则还顺手让三列在默认尺寸下基本等宽（见 CARD_MIN_W 的注释）。
-	# 纵向不设 —— 第 1 行的高度由「网络 / 运行状态」里较高的那个决定，
-	# 本卡片被那一行撑高，接缝才落在同一条横线上。
+	# 宽度就钉在 CARD_MIN_W 上，窗口变宽时多出来的宽度全给右列的「网络 / 运行日志」——
+	# 日志需要宽度（见 CARD_MIN_W 的注释）。
+	# 纵向不设 —— 第 1 行的高度由右邻的「网络」卡决定，本卡片被那一行撑高，
+	# 接缝才落在同一条横线上。
 	card.custom_minimum_size.x = ThemePalette.CARD_MIN_W
 
 	_username = LabeledLineEdit.new()
@@ -248,7 +235,7 @@ func _build_account_card() -> Control:
 func _build_network_card() -> Control:
 	var card := TitledGroup.new()
 	card.title = "网络"
-	# 与同一行的「运行状态」平分富余宽度（两个都要 EXPAND，否则只有一个会吃掉全部）
+	# 独占第 1 行右格：横向 EXPAND，跟着窗口一起变宽
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
 	# 出口名很长（官方原文），单独占一行铺满卡片宽度，比挤在标签右边好读
@@ -338,43 +325,6 @@ func _build_startup_card() -> Control:
 
 	_scale_option = UiScaleOption.new()
 	card.content.add_child(_row("界面缩放", _scale_option))
-	return card
-
-
-func _build_status_card() -> Control:
-	var card := TitledGroup.new()
-	card.title = "运行状态"
-	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	# 内容本身用不了这么宽，定个下限是为了跟左邻的「网络」卡配平（见令牌注释）
-	card.custom_minimum_size.x = ThemePalette.CARD_MIN_W
-	# 与它同一行的「网络」卡片更高，这一格会被行高撑到同样的高度 —— 接缝才对得上。
-	# 纵向不设 EXPAND：内容自己贴顶排，下面留白（而不是把整行拉成内容高）。
-	card.size_flags_vertical = Control.SIZE_FILL
-
-	var grid := GridContainer.new()
-	grid.columns = 2
-
-	# 「连接状态」这一行的值不是纯文字，而是「状态点 + 状态文字」，与头部保持一致
-	_card_dot = StatusDot.new()
-	_card_dot.set_status("StatusIdle")
-	_card_status = _label("未启动", "StatusIdle")
-	var status_line := HBoxContainer.new()
-	status_line.add_theme_constant_override("separation", 6)
-	status_line.add_child(_vcenter(_card_dot))
-	status_line.add_child(_vcenter(_card_status))
-
-	_v_export = _label("—", "ValueText")
-	_v_ip = _label("—", "ValueText")
-	_v_uptime = _label("—", "ValueText")
-	_v_last_check = _label("—", "ValueText")
-
-	for pair in [
-		["连接状态", status_line], ["目标出口", _v_export], ["本机 IP", _v_ip],
-		["连续运行", _v_uptime], ["最后检测", _v_last_check],
-	]:
-		grid.add_child(_vcenter(_grid_label(pair[0])))
-		grid.add_child(_vcenter(pair[1]))
-	card.content.add_child(grid)
 	return card
 
 
@@ -478,12 +428,6 @@ func _row_label(text: String) -> Label:
 	return l
 
 
-func _grid_label(text: String) -> Label:
-	var l := _label(text, "Subtitle")
-	l.custom_minimum_size.x = 84
-	return l
-
-
 # ================================================================ 托盘
 
 func _install_tray() -> void:
@@ -550,12 +494,6 @@ func _make_timers() -> void:
 	_save_timer.timeout.connect(_commit_settings)
 	add_child(_save_timer)
 
-	_ui_timer = Timer.new()
-	_ui_timer.wait_time = 1.0
-	_ui_timer.timeout.connect(_refresh_runtime)
-	add_child(_ui_timer)
-	_ui_timer.start()
-
 
 func _connect_signals() -> void:
 	_monitor.status_changed.connect(_on_status_changed)
@@ -600,7 +538,6 @@ func _load_into_ui() -> void:
 
 	_autostart_switch.set_pressed_no_signal(WinSystem.autostart_entry_exists())
 	_push_scheduler_config()
-	_refresh_v_export()
 
 
 func _on_setting_edited(_unused: Variant = null) -> void:
@@ -633,7 +570,6 @@ func _commit_settings() -> void:
 	_push_scheduler_config()
 	if _monitor.running:
 		_monitor.set_params(AppConfig.monitor_params())
-	_refresh_v_export()
 
 
 func _push_scheduler_config() -> void:
@@ -649,13 +585,6 @@ func _selected_export() -> String:
 	if index < 0 or index >= WltClient.EXPORT_TYPES.size():
 		return "0"
 	return WltClient.EXPORT_TYPES[index][0]
-
-
-func _refresh_v_export() -> void:
-	var value := _selected_export()
-	_v_export.text = WltClient.export_short_name(value)
-	_v_export.tooltip_text = "%s\n\n编号 %s。这是配置里选定的出口，不一定是网页上当前生效的那个。" % [
-		WltClient.export_name(value), value]
 
 
 func _clear_password() -> void:
@@ -694,11 +623,10 @@ func _on_running_changed(running: bool) -> void:
 	_tray_set_disabled(_TRAY_STOP, not running)
 	if not running:
 		_set_status("未启动", "StatusIdle", false)
-		_refresh_runtime()
 
 
 func _on_status_changed(text: String, kind: int) -> void:
-	# **头部与状态卡只显示「状态」，不显示整句话。**
+	# **头部只显示「状态」，不显示整句话。**
 	# 一来看起来干净，二来有实际原因：`Label` 的最小宽度就是整串文字的宽度，
 	# 把「重连失败：域名解析失败（DNS 不通？）（60 秒后重试）」这种放进头部，
 	# 它会把整个头部顶宽、把右边的按钮挤出窗口。完整原因全部进日志。
@@ -740,13 +668,9 @@ static func _status_variation(kind: int) -> String:
 			return "StatusIdle"
 
 
-## 头部状态点、头部文字、卡片里的状态点与文字 —— 四处必须一起改。
-## 集中在这一个函数里改，免得哪次漏掉一处、界面上两个地方说法不一致。
+## 头部状态点与状态文字必须一起改（同一个状态在两处说法不一致最难查）。
 func _set_status(text: String, variation: String, flash: bool) -> void:
 	_dot.set_status(variation)
-	_card_dot.set_status(variation)
-	_card_status.text = text
-	_card_status.theme_type_variation = variation
 	_status_text.theme_type_variation = variation
 	_status_text.text = text
 	if flash:
@@ -755,27 +679,6 @@ func _set_status(text: String, variation: String, flash: bool) -> void:
 		_status_text.start()
 	else:
 		_status_text.stop()
-
-
-func _refresh_runtime() -> void:
-	_v_ip.text = _monitor.last_ip if not _monitor.last_ip.is_empty() else "—"
-	_v_uptime.text = _format_duration(_monitor.uptime_seconds())
-	if _monitor.last_check_unix <= 0.0:
-		_v_last_check.text = "—"
-	else:
-		var when := Time.get_datetime_dict_from_unix_time(int(_monitor.last_check_unix))
-		var state := "成功" if _monitor.last_check_ok else "失败"
-		# 连续失败次数只在 ≥2 时显示 —— 一次失败多半只是抖一下，连着失败才值得警觉
-		if not _monitor.last_check_ok and _monitor.consecutive_failures > 1:
-			state += " · 连续 %d 次" % _monitor.consecutive_failures
-		_v_last_check.text = "%02d:%02d:%02d（%s）" % [when["hour"], when["minute"], when["second"], state]
-
-
-static func _format_duration(seconds: float) -> String:
-	if seconds < 1.0:
-		return "—"
-	var total := int(seconds)
-	return "%02d:%02d:%02d" % [total / 3600, (total % 3600) / 60, total % 60]
 
 
 # ================================================================ 开机自启
@@ -1064,9 +967,9 @@ func _on_close_requested() -> void:
 ## 扩展没编出来（`bin/native_window.windows.x86_64.dll` 缺失）时**退回最小化** ——
 ## 窗口会在任务栏上留一个按钮，但「关窗后程序继续跑」这件事不受影响。
 func _hide_to_tray() -> void:
+	# 隐藏成功**不写日志**：这是日常操作，一天可能点好几次，记进日志只会淹掉有用信息。
+	# 退回最小化是降级路径（原生扩展没加载），那种情况要留下痕迹。
 	if _native_hide():
-		_log("已隐藏到系统托盘（任务栏上不留按钮）。程序继续在后台运行，"
-				+ "点托盘图标可以把它调回来", LogLevel.INFO)
 		return
 	get_window().mode = Window.MODE_MINIMIZED
 	_log("已最小化到任务栏（原生扩展不可用，Godot 自己不允许隐藏主窗口）。"

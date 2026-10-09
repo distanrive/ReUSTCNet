@@ -89,12 +89,16 @@ func _purge_old() -> void:
 	if dir == null:
 		return
 	var cutoff := Time.get_unix_time_from_system() - KEEP_DAYS * 86400.0
+	# 文件名里是**本地**日期，而 `get_unix_time_from_datetime_string()` 把字符串按 **UTC** 解
+	# （实测：`"2026-10-03T00:00:00"` 解出来正是 UTC 的那一秒）。不减掉时区偏移的话，
+	# 每个文件都会被当成早 8 小时 —— 到期的那个会提前 8 小时被删掉。
+	var bias := int(Time.get_time_zone_from_system().bias)
 	for name in dir.get_files():
 		if not name.begins_with("log_") or not name.ends_with(".txt"):
 			continue
 		# 从文件名里取前 10 个字符（YYYY-MM-DD）当日期；取不到就跳过，不猜
 		var stamp := name.substr(4, 10)
-		var unix := Time.get_unix_time_from_datetime_string(stamp + "T00:00:00")
+		var unix := int(Time.get_unix_time_from_datetime_string(stamp + "T00:00:00")) - bias * 60
 		if unix <= 0.0:
 			continue
 		if unix < cutoff:
