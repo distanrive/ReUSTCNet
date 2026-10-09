@@ -524,10 +524,26 @@ screen if necessary"*。默认 `false` 是给「每帧都要重画」的游戏�
 - **`Engine.low_processor_mode` 在 Godot 4 里已经没有了**（那是 3.x 的 API）。4.x 对应的是
   **`OS.low_processor_usage_mode`**（运行时开关）和这个项目设置；另外还有
   `OS.low_processor_usage_mode_sleep_usec`（默认 6900 µs，约 145 FPS 上限）可以调。
-- **别把 `render_target_update_mode` 当成第三个旋钮**：那个**属性只在 `SubViewport` 上注册**
-  （`gdd_0755_SubViewport.md` 有，`gdd_0774_Viewport.md` 基类没有），根窗口写上去是运行时报错。
-  文档未覆盖的下层写法 `RenderingServer.viewport_set_update_mode(根 viewport RID, DISABLED)`
-  **理论上存在但文档没有保证**，要试就得单独验证「有效 + 能干净恢复」，别顺手加。
+**③ 隐藏到托盘时，把根 viewport 的更新也停掉**（`app.gd` 的 `_set_root_viewport_updates()`）。
+
+前两级都不够：`Engine.max_fps = 10` 只是「最多画多快」，帧还是照画；`low_processor_mode`
+只是「**没变化**就不画」—— 可隐藏期间画面偏偏会变：报警态下 `FlashLabel` 每 0.7 秒翻一次
+透明度，断网重连时状态文字也在改，于是每 0.7 秒重绘一次整窗，而窗口根本看不见。
+
+- **必须走 RenderingServer 那一层**：`Viewport.render_target_update_mode` 这个**属性**
+  只在 `SubViewport` 上注册（`gdd_0755_SubViewport.md` 有，`gdd_0774_Viewport.md` 基类没有），
+  根窗口写上去是运行时报错。而 `RenderingServer.viewport_set_update_mode(根 RID, ...)`
+  文档里**没有承诺**能用在根 viewport 上 —— 2026-10-09 实测**可以**：
+  禁用后往日志写一行，画面像素变化 0.000%；恢复之后那行正常出现。
+- **恢复时要照原值写回**，别写死 `VIEWPORT_UPDATE_ALWAYS`。根 viewport 的现值是
+  **2（`VIEWPORT_UPDATE_WHEN_VISIBLE`）**，写死 `ALWAYS`（每帧都重画）会把
+  `low_processor_mode` 省下来的又还回去。`RenderingServer.viewport_get_update_mode()` 能读回原值。
+- **`_native_hide()` 必须是幂等的**（`if _window_native_hidden: return true`）：
+  重复调用会把刚写进去的 `DISABLED` 当成「原值」存下来，窗口再显示出来就是**永久冻住**。
+- **托盘菜单和倒计时对话框不受影响**：它们是独立的原生窗口、各自有 viewport
+  （`Viewport.gui_embed_subwindows` 桌面平台默认 false，本工程没改过）。
+- `self_check.gd` 的 `_check_root_viewport_updates()` 钉着「停得掉 + 恢复得回去」两条 ——
+  这两种失效都不报错，只会让界面白烧 GPU 或者再也不刷新。
 
 **实测结果（2026-10-09，把改动前的构建当基线对比）**：
 

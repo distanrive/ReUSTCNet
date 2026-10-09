@@ -1033,6 +1033,11 @@ static func _native_window_handle() -> int:
 func _native_hide() -> bool:
 	if not _native_window_available():
 		return false
+	# 幂等：已经藏起来了就直接返回。**这个守卫是必需的**，不只是省一次调用 ——
+	# 下面要「读回当前的 viewport 更新模式、等显示时写回去」，重复调用会把
+	# 自己刚写进去的 DISABLED 当成「原值」存下来，窗口再显示出来就是永久冻住的。
+	if _window_native_hidden:
+		return true
 	var hwnd := _native_window_handle()
 	if hwnd == 0:
 		return false
@@ -1042,6 +1047,7 @@ func _native_hide() -> bool:
 	# 待机一整天」的程序没必要一直烤 GPU，所以把帧率压下来（见 _HIDDEN_MAX_FPS）。
 	_max_fps_before_hide = Engine.max_fps
 	Engine.max_fps = _HIDDEN_MAX_FPS
+	_set_root_viewport_updates(false)
 	return true
 
 
@@ -1051,6 +1057,9 @@ func _native_show() -> bool:
 	var hwnd := _native_window_handle()
 	if hwnd == 0:
 		return false
+	# **先恢复更新、再显示**：反过来的话窗口会先以「冻住的旧画面」出现，
+	# 要等下一次内容变化才刷新。
+	_set_root_viewport_updates(true)
 	ClassDB.class_call_static(&"NativeWindow", &"show_window", hwnd)
 	_window_native_hidden = false
 	# **先还原帧率再返回**：让它紧接着的那一帧就按正常帧率画出来，
@@ -1058,6 +1067,44 @@ func _native_show() -> bool:
 	Engine.max_fps = _max_fps_before_hide
 	# 扩展把窗口置于最前了（SetForegroundWindow），这里不用再 move_to_foreground
 	return true
+
+
+## 藏起来之前根 viewport 的更新模式；-1 = 当前没被我们停掉。
+var _viewport_update_before_hide := -1
+
+
+## 停 / 恢复**根 viewport 的更新**。
+##
+## 为什么还需要这一步（`Engine.max_fps` 和 `low_processor_mode` 都不够）：
+##
+## - `Engine.max_fps = 10` 只是「最多画多快」，帧还是要画；
+## - `low_processor_mode` 只是「**没变化**就不画」—— 可隐藏期间画面偏偏会变：
+##   报警态下 `FlashLabel` 每 0.7 秒翻一次透明度，断网重连时状态文字也在改，
+##   于是每 0.7 秒就重绘一次整窗，而窗口根本看不见。
+##
+## 走的是 RenderingServer 这一层，不是 `Viewport.render_target_update_mode`：
+## 后者只在 `SubViewport` 上注册，根窗口写上去是运行时报错（见 CLAUDE.md）。
+## RenderingServer 这层**文档没写能不能用在根 viewport 上**，2026-10-09 实测可以：
+## 禁用后往日志写一行，画面像素变化 0.000%；恢复之后那行正常出现。
+##
+## **托盘菜单和倒计时对话框不受影响**：它们是独立的原生窗口、各自有 viewport
+## （`Viewport.gui_embed_subwindows` 在桌面平台默认 false，本工程没改过）。
+##
+## 恢复时**照原样写回读到的值**，不写死 `VIEWPORT_UPDATE_ALWAYS` —— 那个值是
+## 「每帧都重画」，会把 `low_processor_mode` 省下来的又还回去。
+func _set_root_viewport_updates(on: bool) -> void:
+	var rid := get_viewport().get_viewport_rid()
+	if on:
+		if _viewport_update_before_hide >= 0:
+			RenderingServer.viewport_set_update_mode(rid, _viewport_update_before_hide)
+			_viewport_update_before_hide = -1
+		return
+	# 已经是停掉的状态就别再读一次（见 _native_hide 的幂等守卫）
+	var current := RenderingServer.viewport_get_update_mode(rid)
+	if current == RenderingServer.VIEWPORT_UPDATE_DISABLED:
+		return
+	_viewport_update_before_hide = current
+	RenderingServer.viewport_set_update_mode(rid, RenderingServer.VIEWPORT_UPDATE_DISABLED)
 
 
 func _quit() -> void:

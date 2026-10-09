@@ -36,6 +36,7 @@ func _initialize() -> void:
 	failed += _check_autostart_helpers()
 	failed += await _check_scrollbars()
 	failed += _check_log_view()
+	failed += _check_root_viewport_updates()
 	failed += await _check_native_window()
 	print("\n==== 自检结束：%s ====" % ("全部通过" if failed == 0 else "有 %d 项失败" % failed))
 	quit(1 if failed > 0 else 0)
@@ -353,6 +354,30 @@ func _check_log_view() -> int:
 			n > 0 and n <= 100 and log_view.get_lines()[n - 1] == "批量 499",
 			"500 条之后还剩 %d 行" % n)
 	log_view.free()
+	return failed
+
+
+## 根 viewport 的「停更新 / 照原值恢复」。
+##
+## 这是「隐藏到托盘」省 GPU 的最后一级（`Engine.max_fps` 限速、`low_processor_mode`
+## 只在没变化时不画，都拦不住报警态下 `FlashLabel` 每 0.7 秒翻一次透明度带来的重绘）。
+##
+## 两条都不会报错、只会静默失效：**停不掉** = 那一级白写；**恢复不回去** = 界面再也不刷新。
+## 用的是 RenderingServer 这层（`Viewport.render_target_update_mode` 只在 SubViewport 上，
+## 根窗口写上去是运行时报错），而文档没保证它能用在根 viewport 上 —— 所以钉在这里。
+func _check_root_viewport_updates() -> int:
+	var rid := root.get_viewport_rid()
+	var before := RenderingServer.viewport_get_update_mode(rid)
+
+	RenderingServer.viewport_set_update_mode(rid, RenderingServer.VIEWPORT_UPDATE_DISABLED)
+	var frozen := RenderingServer.viewport_get_update_mode(rid)
+	RenderingServer.viewport_set_update_mode(rid, before)
+	var restored := RenderingServer.viewport_get_update_mode(rid)
+
+	var failed := _report("根 viewport 能被停掉（隐藏时省 GPU 的最后一级）",
+			frozen == RenderingServer.VIEWPORT_UPDATE_DISABLED, "读回 %d" % frozen)
+	failed += _report("根 viewport 能照原值恢复（否则界面再也不刷新）",
+			restored == before, "原值 %d，恢复后 %d" % [before, restored])
 	return failed
 
 
