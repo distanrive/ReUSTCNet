@@ -8,7 +8,9 @@ USTC 有线网自动登录/断线重连工具。**Godot 4.7 前端（纯 GDScrip
 
 ## 技术栈
 
-- **Godot 4.7.x**（标准版，GDScript，非 .NET）。渲染器默认 `forward_plus` + Windows 上的 `vulkan`。
+- **Godot 4.7.x**（标准版，GDScript，非 .NET）。渲染器用 **`gl_compatibility`**（OpenGL 3），
+  不是默认的 `forward_plus` —— 纯 2D 静态界面用不到 Forward+ 的任何特性，而它的基础开销最高
+  （见「渲染器与低处理器模式」那节）。
 - **没有 Python 后端，也没有 autoload 形式的网络层** —— 本工具的负载是「HTTP 轮询 + 状态机 +
   注册表/进程调用」，正好落在 `gdscript-only-guide.md` 判据表的第一行「纯 GDScript，不要后端」。
   收益是交付一个 exe、目标机器不装任何运行时。
@@ -145,7 +147,8 @@ Godot 在导出时会自动把它拷到 exe 旁边。
 ### 体积（104 MB → 29.4 MB）
 
 exe **就是 Godot 引擎本体**，我们的项目数据只占 190 KB —— 所以调资源/导入设置毫无意义，
-只能换一个自己编译的引擎。现在是自编译精简模板 + 类级裁剪，**保留 Vulkan**：
+只能换一个自己编译的引擎。现在是自编译精简模板 + 类级裁剪。**模板里 Vulkan / Forward+ /
+RenderingDevice 目前仍然是编进去的**（见下面的「还有一步没做」）：
 
 | | 官方模板 | 精简模板 | + 安全开关 | + 类级裁剪（现在） |
 | --- | --- | --- | --- | --- |
@@ -160,9 +163,11 @@ exe **就是 Godot 引擎本体**，我们的项目数据只占 190 KB —— �
    项目 → 工具 → Engine Compilation Configuration Editor → **Detect from Project** → Save As
    存成 `tools/reustcnet.gdbuild`。构建脚本会把它作为 `build_profile=` 传进去。
 
-> **试过但放弃的**：`vulkan=no`（再省 2.6 MB）—— 要连带把工程的 `rendering_method` 改成
-> `gl_compatibility`，收益和类裁剪相当却动了渲染路径，不划算。界面渲染实测两者只有
-> 字形边缘的亚像素差（2.17% 像素不同、布局配色一致），哪天真要省可以走这条路。
+> **升级到「Compatibility 渲染器」之后，`vulkan=no` 这条路重新变得可行了**（2026-10-09）：
+> 当初否掉它的唯一理由就是「要连带把 `rendering_method` 改成 `gl_compatibility`」——
+> 现在工程**本来就在用 `gl_compatibility`**（为的是降内存和 GPU，见「渲染器与低处理器模式」）。
+> 于是可以把 `reustcnet.gdbuild` 里的 `forward_plus_renderer` / `rendering_device` / `vulkan`
+> 都置 false，重编模板再省约 2.6 MB。**这是一步独立的重编模板工作，还没做。**
 > **UPX** 也不用（会破坏内嵌 PCK 和图标替换，且报毒）。
 
 **重新编译模板的完整步骤**（`tools/build_template.sh` 里每一条关闭项都写了理由）：
@@ -258,10 +263,13 @@ curl / Chrome / Python 的 requests 都**容错**（跳过空白），所以旧�
 那份 profile 是**编辑器 GUI 生成**的（没有 CLI，`EditorBuildProfileManager::_detect_from_project()`
 没暴露给脚本），所以它会被反复覆盖。**每次重新 Detect 之后都要回来核对这四条**：
 
-1. **`forward_plus_renderer` / `rendering_device` / `vulkan` 必须是 `true`。**
-   Detect 是**照着工程当时的状态**判断的 —— 如果那一刻工程的 `rendering_method` 不是
-   forward_plus（比如调试别的渲染器时），它会把这几个判成「用不到」并写成 `false`，
-   编出来的模板就是个跑不了 forward_plus 的引擎，而且**要到导出后才暴露**。
+1. **「工程实际在用的那个渲染器」对应的开关必须是 `true`。**
+   Detect 是**照着工程当时的状态**判断的，所以这条规则会随工程一起变：
+   2026-10-09 之前工程用 `forward_plus`，要盯的是 `forward_plus_renderer` / `rendering_device` /
+   `vulkan`；**现在工程改用了 `gl_compatibility`，要盯的就变成了 OpenGL 3 那条路**
+   （对应 SCons 的 `opengl3=yes`，`build_template.sh` 的「刻意不关的」列表里写着它）。
+   Detect 在那一刻判断错了，编出来的模板就是**跑不了目标渲染器**的引擎，
+   而且**要到导出后才暴露** —— 运行时它会**悄悄回退**到另一个渲染器，日志里未必显眼。
 2. **`GDExtension` 不能留在禁用表里。** 检测器只看工程里的场景与脚本，
    **看不到「我们运行时会加载 `native_window.gdextension`」** —— 这正是官方文档列出的
    盲区之一（「GDExtension」被明确点名）。禁掉它等于自废武功。
@@ -487,6 +495,63 @@ Time.get_unix_time_from_datetime_string(local_str) - bias * 60       # 本地 �
   让最后一张卡长起来，余白就移到卡片内部（和上面被撑高的「账户」卡片表现一致）。
 - `WINDOW_DEFAULT_W/H` 是**量出来的**（打印 `GridContainer.get_combined_minimum_size()`），
   不是估的。改了卡片内容记得重新量一遍，否则「初始窗口能装下所有内容」这条会悄悄失效。
+
+### 渲染器与低处理器模式：一个静态界面不该一直烤 GPU
+
+2026-10-09 改的，起因是实测占用偏高（任务管理器里 317 MB / 后台也有约 3.5% GPU）。两处改动：
+
+**① `rendering_method` 用 `gl_compatibility`，不是默认的 `forward_plus`**（写在 `project.godot`）。
+
+官方文档（`gdd_0295_Overview_of_renderers.md`）对渲染器的定位是：
+
+- Forward+：*"The most advanced renderer, suited for desktop platforms only"*，
+  对比表里 **"Highest base cost, and low scaling cost"**；
+- Compatibility：**"Low base cost, but high scaling cost"**，并且
+  *"You are developing a 2D game … You want the best performance possible on all devices"* 时推荐它；
+- `gdd_0414_Creating_applications.md` 说得更直接：*"Use the Compatibility renderer if you don't need
+  features that are exclusive to Forward+ or Mobile. The Compatibility renderer has lower hardware
+  requirements and generally launches faster, which makes it a better option for applications."*
+
+本项目是纯 2D 静态界面（卡片、输入框、一个日志框），Forward+ 的特性一个都用不到。
+2026-10-03 已经实测过两者渲染结果：**只有字形边缘的亚像素差（2.17% 像素不同，布局与配色一致）**。
+
+**② 项目设置开 `application/run/low_processor_mode = true`。**
+
+文档（`gdd_1421_ProjectSettings.md`）：*"the engine takes longer to redraw, but only redraws the
+screen if necessary"*。默认 `false` 是给「每帧都要重画」的游戏用的，这种静态控制台界面
+空闲时不该重绘 —— 这正是后台 GPU 占用的来源。
+
+- **`Engine.low_processor_mode` 在 Godot 4 里已经没有了**（那是 3.x 的 API）。4.x 对应的是
+  **`OS.low_processor_usage_mode`**（运行时开关）和这个项目设置；另外还有
+  `OS.low_processor_usage_mode_sleep_usec`（默认 6900 µs，约 145 FPS 上限）可以调。
+- **别把 `render_target_update_mode` 当成第三个旋钮**：那个**属性只在 `SubViewport` 上注册**
+  （`gdd_0755_SubViewport.md` 有，`gdd_0774_Viewport.md` 基类没有），根窗口写上去是运行时报错。
+  文档未覆盖的下层写法 `RenderingServer.viewport_set_update_mode(根 viewport RID, DISABLED)`
+  **理论上存在但文档没有保证**，要试就得单独验证「有效 + 能干净恢复」，别顺手加。
+
+**实测结果（2026-10-09，把改动前的构建当基线对比）**：
+
+| | 改动前（`forward_plus` + 低处理器模式关） | 改动后（`gl_compatibility` + 开） |
+| --- | --- | --- |
+| 内存（WorkingSet，空闲可见） | 407.5 MB | **125.9 MB** |
+| GPU（同一时刻，整机百分比） | 28.59% | **0.17%** |
+
+（两个数字都是**空闲、界面可见**时测的 —— 用户报的 3.5% 是隐藏到托盘之后的，
+那条路径另有 `Engine.max_fps = 10` 在压。）
+
+三条风险都验过了：
+
+- **没有静默回退**：模板里两个驱动都在（`grep -a` 模板产物：`Vulkan`/`VK_KHR` 与
+  `EGL`/`GLES3`/`opengl3` 都在，`gl_compatibility` 出现 6 次）。
+  `app.gd` 的启动日志里有 `渲染器：gl_compatibility（驱动 opengl3）` 一行可以复验。
+- **动画没被饿死**：`FlashLabel` 每 0.7 秒翻一次 `modulate.a`，所以取相隔 0.75 秒的两帧截图，
+  画面必定不同。实测开/关低处理器模式**差异完全一致（各 467 px）** —— 它只是"没变化时不画"。
+- **自绘控件正常**：`gl_compatibility` 与 `forward_plus` 各渲一张对比，差异 **2.584%**
+  （与 2026-10-03 量到的 2.17% 同一量级），肉眼确认状态点 / 开关 / 滚动条 / 中文都对。
+
+> 测「有没有重绘」时**别用「隔 0.35 秒拍两张」**：`FlashLabel` 的周期是 0.7 秒，
+> 半个周期正好可能一次都没翻，两张图会一模一样，看起来像"重绘被停掉了"（我这么误判过一次）。
+> 要么用 > 一个周期的间隔，要么两次截图之间**故意制造一次必然的内容变化**（比如往日志追加一行）。
 
 ### 窗口尺寸与缩放
 
@@ -745,6 +810,10 @@ func _theme_color(name, fallback):    # 4) 颜色走主题类型；注意 Godot 
       → `--import` → **用窗口模式**跑 `self_check.gd`（headless 下那一项会跳过），
       确认三条断言都过；再 `build.bat test`，确认 `dist\` 里有那个 dll、
       且导出后跑一次的日志里有「窗口隐藏扩展已加载」
+- [ ] 动过 `rendering_method` 或 `application/run/low_processor_mode`：**必须用导出的 exe 验**——
+      ① 确认渲染器真的是 Compatibility（模板没编进 opengl3 的话会**静默回退**，工程里那行等于白写）；
+      ② 盯一分钟：状态灯在闪、倒计时圆环在转、日志自动滚到最新一行；
+      ③ 截图确认自绘控件（StatusDot / Switch / 环形进度 / 滚动条）在那套渲染路径下画得对
 - [ ] 动过界面布局：**截图看一眼**（`--script` 渲成 PNG）—— 接缝对齐、
       初始窗口 900×760 下**不出现任何滚动条**。改过卡片内容后重新量
       `GridContainer.get_combined_minimum_size()`，必要时同步 `WINDOW_DEFAULT_W/H`

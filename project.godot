@@ -17,6 +17,11 @@ run/main_scene="res://scenes/app.tscn"
 config/features=PackedStringArray("4.7")
 config/icon="res://icon.png"
 config/windows_native_icon="res://icon.ico"
+; 低处理器模式：只在**内容真的变了**才重绘。这是个静态控制台界面，
+; 平时没人动它就不该一直烤 GPU。默认是 false（游戏要每帧重画，我们不用）。
+; 已实测：开与不开，同样的内容变化产生的像素改变量完全一致（闪烁动画 467 px 对 467 px），
+; 也就是说它只是"没变化时不画"，不会把动画饿死。
+run/low_processor_mode=true
 
 [autoload]
 
@@ -31,4 +36,14 @@ window/size/viewport_width=1080
 window/size/viewport_height=720
 
 [rendering]
+
+; 渲染器：**Compatibility（OpenGL 3）**，不是默认的 Forward+。
+; 官方文档对 2D/UI 应用的建议就是它：Forward+ "has a higher base overhead"，
+; 而 Compatibility "has lower hardware requirements and generally launches faster,
+; which makes it a better option for applications"（Overview of renderers 一节）。
+; 本项目是纯 2D 静态界面，用不到 Forward+ 的任何特性；换过去内存与 GPU 占用都更低。
+; 换回来只需把这一行删掉或改成 "forward_plus"。
+; **注意**：自编译模板必须编进了 opengl3 驱动，否则会在运行时悄悄回退，
+; 这个改动静默失效 —— 只能用导出的 exe 验证（见 CLAUDE.md 的类级裁剪那节）。
+renderer/rendering_method="gl_compatibility"
 environment/defaults/default_clear_color=Color(0.957, 0.961, 0.969, 1)

@@ -924,6 +924,14 @@ func _open_log_dir() -> void:
 func _log_startup_info() -> void:
 	_log("配置文件：%s" % AppShell.config_path, LogLevel.INFO)
 	_log("日志目录：%s" % _log_store.dir_path(), LogLevel.INFO)
+	# **实际生效**的渲染器，不是工程里写的那个。
+	# 工程里是 `gl_compatibility`，但如果自编译模板没把那条路径编进去，引擎会
+	# **静默回退**到别的渲染器——不报错、界面也照常，只有这一行能看出来。
+	# 导出的 exe 是 GUI 子系统、没有 stdout，所以 Godot 自己那行启动输出根本看不到，
+	# 必须由我们自己写进日志文件。（两个 API 的返回值枚举见 RenderingServer 文档。）
+	_log("渲染器：%s（驱动 %s）" % [
+			RenderingServer.get_current_rendering_method(),
+			RenderingServer.get_current_rendering_driver_name()], LogLevel.INFO)
 	if not AppPaths.is_portable():
 		_log("程序目录不可写，配置与日志已改存到用户数据目录", LogLevel.WARN)
 	_log("密码密钥存储：%s" % SecretStore.key_source_text(),
