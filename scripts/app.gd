@@ -265,7 +265,8 @@ func _build_command_card() -> Control:
 
 	_command_switch = Switch.new()
 	card.content.add_child(_switch_row("启用", _command_switch,
-			"到点弹出确认倒计时；倒计时结束后执行程序目录下的 command.bat。"))
+			"到点执行程序目录下的 command.bat。确认倒计时大于 0 时会先弹窗让你确认；"
+			+ "设为 0 则直接执行、不弹窗。"))
 
 	_hour_spin = _spin(0, 23, " 时")
 	_minute_spin = _spin(0, 59, " 分")
@@ -277,8 +278,10 @@ func _build_command_card() -> Control:
 	time_row.add_child(_vcenter(_minute_spin))
 	card.content.add_child(time_row)
 
-	_countdown_spin = _spin(1, 3600, " 秒")
-	_countdown_spin.tooltip_text = "执行前留给你取消的时间。"
+	_countdown_spin = _spin(0, 3600, " 秒")
+	_countdown_spin.tooltip_text = ("执行前留给你取消的时间。\n"
+			+ "设为 0 = 到点直接执行：不弹倒计时框，也不会把窗口从托盘里叫回来"
+			+ "（给无人值守的任务用）。")
 	card.content.add_child(_row("确认倒计时", _countdown_spin))
 
 	var reset := _button("重置触发状态", "GhostButton", _reset_command_triggered)
@@ -734,15 +737,31 @@ func _on_command_triggered(key: String) -> void:
 		_scheduler.resolve(key, false)
 		return
 
+	# 「确认倒计时」= 0 是个**刻意的档位**：到点直接执行，不弹窗、也不把窗口从托盘里叫回来
+	# （无人值守的任务用）。大于 0 才走「叫回窗口 → 弹倒计时」那条路。
+	var countdown := maxi(int(AppConfig.get_value("command_countdown")), 0)
+
 	var bat := AppPaths.command_bat()
 	if not FileAccess.file_exists(bat):
 		# 不消耗持久记录：把文件补上之后，当天还能再触发一次
 		_scheduler.resolve(key, false)
 		_log("定时执行指令已触发，但没找到 %s，本次跳过" % bat, LogLevel.WARN)
+		# **出错一律把窗口叫回来**，倒计时为 0 也一样 —— 那个档位省掉的是「确认」这一步，
+		# 不是「出错也不告诉你」。这类问题需要人来处理，藏在托盘里只会让人一头雾水。
+		_show_window()
 		_alert("未找到指令文件",
 				"没找到 %s\n\n请在程序目录下新建 command.bat，并写入需要执行的指令。" % bat)
 		return
 
+	if countdown <= 0:
+		_log("定时执行指令已触发（确认倒计时为 0），立即执行 %s" % bat, LogLevel.WARN)
+		_run_command_bat(key)
+		return
+
+	# 倒计时 > 0：**先把主窗口叫回来**（2026-10-12 报上来的 bug：窗口藏在托盘里时，
+	# 倒计时框根本露不了脸，指令静默执行、用户既不知道也没机会取消）。
+	# 倒计时框是主窗口的 **transient 子窗口**，主人不可见时用户看不到它。
+	_show_window()
 	_open_countdown_dialog(key, bat)
 
 
@@ -832,16 +851,24 @@ func _tick_countdown() -> void:
 	_cd_ring.value = float(_cd_remaining) / float(_cd_total)
 
 
+## 倒计时走完、或长按「立即执行」时调这里。
 func _execute_command() -> void:
 	if not _close_countdown():
 		return            # 已经处理过了（长按按钮与倒计时可能几乎同时到）
-	_scheduler.resolve(_cd_key, true)
+	_run_command_bat(_cd_key)
+
+
+## 真正把 command.bat 跑起来。三条路都汇到这里：倒计时走完、长按「立即执行」、
+## 以及**确认倒计时为 0** 时的直接执行（那条没有倒计时框可关，所以不能走 _execute_command）。
+func _run_command_bat(key: String) -> void:
+	_scheduler.resolve(key, true)
 	AppConfig.set_value("command_last_triggered", _scheduler.last_triggered)
 	AppConfig.save()
 
 	var bat := AppPaths.command_bat()
 	if not FileAccess.file_exists(bat):
 		_log("准备执行时 %s 已不存在，本次跳过" % bat, LogLevel.ERROR)
+		_show_window()      # 倒计时为 0 那条路上窗口可能还在托盘里
 		_alert("执行失败", "没有找到 %s。" % bat)
 		return
 
@@ -852,6 +879,7 @@ func _execute_command() -> void:
 		_log("已启动 command.bat（pid=%d）" % pid, LogLevel.WARN)
 	else:
 		_log("启动 command.bat 失败", LogLevel.ERROR)
+		_show_window()
 		_alert("执行失败", "无法启动 %s，请检查文件权限。" % bat)
 
 

@@ -2,9 +2,10 @@
 
 USTC 有线网自动登录/断线重连工具。**Godot 4.7 前端（纯 GDScript，无 Python 后端）**。
 
-界面与主题体系从 [Godot4GUI](../Godot4GUI) 模板裁剪而来（设计令牌 → 主题工厂 → 全局 Theme，
-加上一批可复用控件）。模板里那份更完整的约定（控件全表、表格行内按钮、性能红线等）仍在
-`D:\python_file\Godot4GUI\CLAUDE.md`，本项目只保留用得上的部分。
+界面与主题体系从上游模板 [Godot4GUI](https://github.com/distanrive/Godot4GUI) 裁剪而来
+（设计令牌 → 主题工厂 → 全局 Theme，加上一批可复用控件）。模板里那份更完整的约定
+（控件全表、表格行内按钮、性能红线等）在本机的 `D:\python_file\Godot4GUI\CLAUDE.md`，
+本项目只保留用得上的部分。
 
 ## 技术栈
 
@@ -289,7 +290,8 @@ curl / Chrome / Python 的 requests 都**容错**（跳过空白），所以旧�
 
 - 可复用控件用 `class_name` 声明；复合控件的子节点在 `_init()` 里建，
   保证 `new()` 之后就能访问（`TitledGroup.content`、`LabeledLineEdit.line_edit` 都是这个规矩）。
-- **UI 全部用 GDScript 代码构建**（类 PyQt）。`scenes/app.tscn` 里只有一个挂脚本的空 `Control`。
+- **UI 全部用 GDScript 代码构建**（控件都在 `_init()` 里 `new()` 出来，不在场景文件里摆）。
+  `scenes/app.tscn` 里只有一个挂脚本的空 `Control`。
 - **样式只走主题**：颜色/字号用 `theme_type_variation`，**不要**在业务脚本里
   `add_theme_color_override` / `add_theme_font_size_override`。缺层级就在
   `theme_factory.gd` 的 `_type_variations()` 里加一个变体，缺颜色就在
@@ -627,6 +629,18 @@ stop() → _generation += 1
 `start()` 有 `if _host != null: return` 的幂等保护，重复调用无害；
 放在 `_connect_signals()` **之后**（`triggered` 先接上再开跑）。
 
+**「确认倒计时」= 0 是个刻意的档位**（2026-10-14 加的）：到点**直接执行**，
+不建倒计时框、也不调 `_show_window()` —— 给无人值守的任务用。大于 0 才走
+「叫回主窗口 → 弹倒计时」。`SpinBox` 的下限因此从 1 改成了 0。
+
+- 三条执行路径（倒计时走完 / 长按「立即执行」/ 倒计时为 0）汇到同一个
+  `_run_command_bat(key)`；`_execute_command()` 只是「先关掉倒计时框再调它」，
+  所以**倒计时为 0 那条不能走 `_execute_command()`** —— 它靠 `_close_countdown()` 返回 false
+  来防重复，没有框可关时会被直接挡掉、`command.bat` 根本不会执行。
+- **出错仍然弹窗**（找不到 / 启动不了 `command.bat`），倒计时为 0 也一样：
+  那个档位省掉的是「确认」这一步，不是「出错也不告诉你」。
+  这两条错误分支里的 `_show_window()` 不能省 —— 0 那条路上窗口可能还在托盘里。
+
 ### Windows 调用
 
 - 全部收口在 `win_registry.gd` / `win_system.gd` / `win_shell.gd`，参数一律用
@@ -707,6 +721,12 @@ stop() → _generation += 1
   用 `get_item_index(id)` 按 id 反查（`app.gd` 的 `_tray_set_disabled`）。
 - 关闭窗口的行为自己管：`get_tree().auto_accept_quit = false`
   + `NOTIFICATION_WM_CLOSE_REQUEST` 里决定「隐藏到托盘」还是「退出」。
+- **凡是「要用户看见」的功能，都得自己把主窗口叫回来**（2026-10-12 修的 bug）：
+  定时执行指令触发时窗口还在托盘里，倒计时对话框和 `_alert` 都是主窗口的 **transient 子窗口**，
+  主人不可见时用户看不到它们 —— 结果指令静默执行、用户既不知道也没机会取消。
+  修法是 `_on_command_triggered()` **第一句就 `_show_window()`**，把这条路径上的每个分支
+  （包括「没找到 command.bat」那条 `_alert`）都盖住。
+  加新的「主动提示」类功能时记得照做 —— `_alert()` 本身不会替你恢复窗口。
 - **「隐藏到托盘」必须借原生扩展**（见下一节）。Godot 自己做不到这件事，
   而旧代码是 `win.hide()` 之后读 `win.visible` —— 那**每一次**都会走进「隐藏失败」分支
   （`hide()` 必然失败，见下节），于是打一条看起来像偶发故障的警告、再去最小化。
